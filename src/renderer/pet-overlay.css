@@ -84,7 +84,11 @@ button { font:inherit; }
 .pet-badge:hover,.pet-badge:focus-visible { background:var(--hover); outline:none; }
 .pet-badge[hidden] { display:none; }
 .pet-shell[data-level='running'] .pet-badge { border-color:var(--accent-edge); }
-.pet-shell[data-level='review'] .pet-badge { border-color:var(--green-line); }
+.pet-shell[data-level='review'] .pet-badge {
+  border-color:var(--green-line);
+  background:var(--green-wash);
+  color:var(--green);
+}
 .pet-shell[data-level='failed'] .pet-badge { border-color:var(--red-line); }
 
 .pet-tray {

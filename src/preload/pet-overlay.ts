@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { PetLibraryState, PetOverlayBounds, PetOverlayPointer, PetOverlaySnapshot, PetRuntimeAsset } from '../shared/pets.js';
+import type { PetLibraryState, PetOverlayBounds, PetOverlayHitRegion, PetOverlayPointer, PetOverlaySnapshot, PetRuntimeAsset } from '../shared/pets.js';
 
 type Reply<T> = { ok: true; data: T } | { ok: false; error: string };
 const call = <T>(channel: string, payload?: unknown): Promise<Reply<T>> => ipcRenderer.invoke(channel, payload) as Promise<Reply<T>>;
@@ -8,7 +8,8 @@ const api = {
   listPets: () => call<PetLibraryState>('pets:list'),
   petAsset: (id: string) => call<PetRuntimeAsset>('pets:asset', { id, preview: false }),
   hidePet: (id: string): void => ipcRenderer.send('pet-overlay:hidePet', id),
-  setInteractive: (interactive: boolean): void => ipcRenderer.send('pet-overlay:interactive', interactive === true),
+  setInteractive: (interactive: boolean, regions: PetOverlayHitRegion[] = []): void =>
+    ipcRenderer.send('pet-overlay:interactive', { interactive: interactive === true, regions }),
   focusOwner: (): void => ipcRenderer.send('pet-overlay:focusOwner'),
   openLibrary: (): void => ipcRenderer.send('pet-overlay:openLibrary'),
   openActivity: (sessionId: string): void => ipcRenderer.send('pet-overlay:openActivity', { sessionId }),

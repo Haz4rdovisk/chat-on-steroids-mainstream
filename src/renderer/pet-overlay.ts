@@ -3,6 +3,7 @@ import type {
   PetAnimationManifest,
   PetLibraryState,
   PetOverlayBounds,
+  PetOverlayHitRegion,
   PetOverlayPointer,
   PetOverlaySnapshot,
   PetRecord
@@ -47,6 +48,7 @@ let snapshot: PetOverlaySnapshot | null = null;
 let bounds: PetOverlayBounds = { width: innerWidth, height: innerHeight, scaleFactor: devicePixelRatio };
 let pointer: PetOverlayPointer = { x: -1000, y: -1000 };
 let interactive = false;
+let interactiveSignature = '';
 let trayOpen = false;
 let trayAnchorId: string | null = null;
 let menuTargetId: string | null = null;
@@ -212,6 +214,7 @@ function advance(now: number): void {
     paintView(view);
     if (view.machine.state === 'idle' && before !== 'idle') persistPosition(view);
   }
+  syncInteractiveRegions();
 }
 
 function step(now: number): void {
@@ -300,6 +303,7 @@ function createView(record: PetRecord, atlasUrl: string, manifest: PetAnimationM
     if (canAnimate()) advance(performance.now());
     machine.movePointer(event.pointerId, { x: event.clientX, y: event.clientY });
     paintView(view);
+    syncInteractiveRegions();
     scheduleWake();
   });
   shell.addEventListener('pointerup', event => {
@@ -461,10 +465,56 @@ function petNear(view: PetView, point: PetOverlayPointer): boolean {
     && point.y >= y - INTERACTION_PAD && point.y <= y + PET_SIZE + INTERACTION_PAD;
 }
 
+function hitRegion(left: number, top: number, right: number, bottom: number, padding = 0): PetOverlayHitRegion | null {
+  const quantum = 8;
+  const x = Math.max(0, Math.floor((left - padding) / quantum) * quantum);
+  const y = Math.max(0, Math.floor((top - padding) / quantum) * quantum);
+  const edgeX = Math.min(bounds.width, Math.ceil((right + padding) / quantum) * quantum);
+  const edgeY = Math.min(bounds.height, Math.ceil((bottom + padding) / quantum) * quantum);
+  return edgeX > x && edgeY > y ? { x, y, width: edgeX - x, height: edgeY - y } : null;
+}
+
+function elementRegion(element: HTMLElement, padding: number): PetOverlayHitRegion | null {
+  if (element.hidden) return null;
+  const rect = element.getBoundingClientRect();
+  return hitRegion(rect.left, rect.top, rect.right, rect.bottom, padding);
+}
+
+function interactionRegions(): PetOverlayHitRegion[] {
+  const regions: PetOverlayHitRegion[] = [];
+  for (const view of views.values()) {
+    if (!view.machine.visible) continue;
+    const { x, y } = view.machine.position;
+    const pet = hitRegion(x, y, x + PET_SIZE, y + PET_SIZE, INTERACTION_PAD);
+    if (pet) regions.push(pet);
+    for (const prop of [view.target, view.bin, view.spark]) {
+      if (!prop || prop.hidden) continue;
+      const region = elementRegion(prop, 8);
+      if (region) regions.push(region);
+    }
+  }
+  if (trayOpen && !tray.hidden) {
+    const region = elementRegion(tray, 18);
+    if (region) regions.push(region);
+  }
+  if (!menu.hidden) {
+    const region = elementRegion(menu, 10);
+    if (region) regions.push(region);
+  }
+  return regions;
+}
+
 function setInteractive(next: boolean): void {
-  if (interactive === next) return;
+  const regions = next ? interactionRegions() : [];
+  const signature = JSON.stringify([next, regions]);
+  if (interactive === next && interactiveSignature === signature) return;
   interactive = next;
-  api.setInteractive(next);
+  interactiveSignature = signature;
+  api.setInteractive(next, regions);
+}
+
+function syncInteractiveRegions(): void {
+  if (interactive) setInteractive(true);
 }
 
 function updateInteraction(next: PetOverlayPointer): void {
@@ -544,6 +594,7 @@ api.onBounds(next => {
     for (const view of views.values()) view.machine.resize(bounds.width, bounds.height);
   });
   placeTray();
+  syncInteractiveRegions();
 });
 
 trayClose.addEventListener('click', () => setTray(false));
@@ -570,6 +621,7 @@ void api.listPets().then(reply => { if (reply.ok && !disposed) applyLibrary(repl
 
 window.addEventListener('pagehide', () => {
   disposed = true;
+  setInteractive(false);
   loading.clear();
   cancelWake();
   for (const view of views.values()) disposeView(view);

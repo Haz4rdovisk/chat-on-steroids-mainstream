@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentInfo, SessionSummary } from '../src/shared/session.js';
-import { highestPetActivityLevel, petActivityForAgent, petActivityForSession } from '../src/shared/pet-activity.js';
+import { highestPetActivityLevel, petActivityForAgent, petActivityForSession, petTaskSessionId } from '../src/shared/pet-activity.js';
 
 const NOW = 10_000;
 const session = (overrides: Partial<SessionSummary> = {}): SessionSummary => ({
@@ -17,6 +17,12 @@ const agent = (overrides: Partial<AgentInfo> = {}): AgentInfo => ({
 } as AgentInfo);
 
 describe('pet task activity projection', () => {
+  it('resolves a parked worker back to its proven Prime without guessing an unlinked owner', () => {
+    expect(petTaskSessionId(session())).toBe('session-one');
+    expect(petTaskSessionId(session({ origin: { kind: 'worker', fromSessionId: 'prime-session', agentId: 'worker-1', task: 'Inspect' } }))).toBe('prime-session');
+    expect(petTaskSessionId(session({ origin: { kind: 'worker', fromSessionId: null, agentId: 'worker-1', task: 'Inspect' } }))).toBeNull();
+    expect(petTaskSessionId(session({ origin: { kind: 'helper', fromSessionId: 'prime-session', agentId: null, task: '' } }))).toBeNull();
+  });
   it('projects authoritative worker and session state without renderer ownership', () => {
     expect(petActivityForAgent(agent(), 'worker-session', false)).toEqual(expect.objectContaining({ level: 'running', sessionId: 'worker-session' }));
     expect(petActivityForSession(session({ activityExpiresAt: NOW + 2_000 }), false, NOW)?.activity).toEqual(expect.objectContaining({ level: 'running', sessionId: 'session-one' }));
@@ -30,6 +36,20 @@ describe('pet task activity projection', () => {
     ];
     expect(rows.map(row => row.level)).toEqual(['waiting', 'failed', 'review', 'failed']);
     expect(highestPetActivityLevel(rows)).toBe('failed');
+    expect(highestPetActivityLevel([rows[0]!, rows[2]!])).toBe('review');
+    expect(highestPetActivityLevel([rows[0]!, petActivityForAgent(agent(), null, false)])).toBe('running');
+  });
+  it('keeps a tool-only completed turn green for review and does not revive failed history', () => {
+    const completed = session({
+      lastToolCallAt: NOW - 2_000, lastAssistantFinalAt: null, lastTurnEndAt: NOW - 1_000,
+      lastTurnOutcome: 'completed', activityExpiresAt: null
+    });
+    expect(petActivityForSession(completed, false, NOW)).toEqual(expect.objectContaining({
+      activity: expect.objectContaining({ level: 'review', body: 'Ready for review' }),
+      nextAt: NOW - 1_000 + 45_000
+    }));
+    expect(petActivityForSession({ ...completed, lastTurnOutcome: 'failed', lastAssistantFinalAt: NOW - 500 }, false, NOW)).toBeNull();
+    expect(petActivityForSession({ ...completed, activeTurnId: 'next-turn' }, false, NOW)).toBeNull();
   });
   it('expires the review reaction at its exact deadline', () => {
     const reviewed = session({ lastToolCallAt: null, lastAssistantFinalAt: NOW - 1_000, activityExpiresAt: null });

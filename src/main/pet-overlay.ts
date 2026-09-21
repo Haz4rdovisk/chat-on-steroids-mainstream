@@ -2,8 +2,8 @@
 import path from 'node:path';
 import { BrowserWindow, ipcMain, screen } from 'electron';
 import { defaultAppearance } from '../shared/appearance.js';
-import type { PetActivity, PetOverlayBounds, PetOverlayControlState, PetOverlayPointer, PetOverlaySnapshot } from '../shared/pets.js';
-import { highestPetActivityLevel, petActivityForAgent, petActivityForSession } from '../shared/pet-activity.js';
+import type { PetActivity, PetOverlayBounds, PetOverlayControlState, PetOverlayHitRegion, PetOverlayPointer, PetOverlaySnapshot } from '../shared/pets.js';
+import { highestPetActivityLevel, petActivityForAgent, petActivityForSession, petTaskSessionId } from '../shared/pet-activity.js';
 import { getConfig } from './config.js';
 import { logWarn } from './logger.js';
 import { onPetLibraryChange, petLibraryState } from './pet-library.js';
@@ -15,12 +15,18 @@ import { sessionActivityExpiresAt } from './bridge.js';
 
 const MAX_ACTIVITIES = 8;
 const POINTER_INTERVAL_MS = 50;
-const FORWARDS_IGNORED_MOUSE_MOVES = process.platform === 'win32' || process.platform === 'darwin';
+// Electron's Windows forwarding path lets both the ignored overlay and the window beneath it
+// publish a cursor for one physical mouse move. Keep one owner there: native polling discovers
+// proximity, and only the interactive overlay receives renderer mouse events.
+const FORWARDS_IGNORED_MOUSE_MOVES = process.platform === 'darwin';
+const SUPPORTS_WINDOW_SHAPE = process.platform === 'win32' || process.platform === 'linux';
+const MAX_HIT_REGIONS = 64;
 
 let ownerWindow: (() => BrowserWindow | null) | null = null;
 let activateOwner: (() => void) | null = null;
 let overlay: BrowserWindow | null = null;
 let overlayReady = false;
+let overlayInteractive: boolean | null = null;
 let globallyVisible = true;
 const dismissedPetIds = new Set<string>();
 let activities: PetActivity[] = [];
@@ -83,24 +89,63 @@ function bounds(): PetOverlayBounds {
   return { width: display.workArea.width, height: display.workArea.height, scaleFactor: display.scaleFactor };
 }
 
-function setInteractive(interactive: boolean): void {
+function validHitRegions(value: unknown, win: BrowserWindow): PetOverlayHitRegion[] {
+  if (!Array.isArray(value)) return [];
+  const area = win.getContentBounds();
+  const regions: PetOverlayHitRegion[] = [];
+  for (const raw of value.slice(0, MAX_HIT_REGIONS)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const candidate = raw as Record<string, unknown>;
+    const x = candidate.x, y = candidate.y, width = candidate.width, height = candidate.height;
+    if (typeof x !== 'number' || !Number.isFinite(x) || typeof y !== 'number' || !Number.isFinite(y) ||
+        typeof width !== 'number' || !Number.isFinite(width) || typeof height !== 'number' || !Number.isFinite(height)) continue;
+    const left = Math.max(0, Math.min(area.width, Math.floor(x)));
+    const top = Math.max(0, Math.min(area.height, Math.floor(y)));
+    const right = Math.max(left, Math.min(area.width, Math.ceil(x + width)));
+    const bottom = Math.max(top, Math.min(area.height, Math.ceil(y + height)));
+    if (right > left && bottom > top) regions.push({ x: left, y: top, width: right - left, height: bottom - top });
+  }
+  return regions;
+}
+
+function setInteractive(interactive: boolean, requestedRegions?: unknown): void {
   const win = overlay;
   if (!win || win.isDestroyed()) return;
+  const changed = overlayInteractive !== interactive;
+  const regions = validHitRegions(requestedRegions, win);
   if (interactive) {
-    win.setIgnoreMouseEvents(false);
-    if (process.platform === 'win32' && !win.isFocusable()) win.setFocusable(true);
+    // Never expose the full transparent desktop surface to native hit-testing. On Windows that
+    // surface is treated as an occluding fullscreen window and Chromium pauses/compositor-drops
+    // the main app and video behind it as soon as the pointer reaches a pet.
+    if (SUPPORTS_WINDOW_SHAPE) {
+      if (regions.length === 0) return;
+      win.setShape(regions);
+    }
+    if (changed) win.setIgnoreMouseEvents(false);
+    overlayInteractive = true;
   } else {
-    if (FORWARDS_IGNORED_MOUSE_MOVES) win.setIgnoreMouseEvents(true, { forward: true });
-    else win.setIgnoreMouseEvents(true);
-    if (win.isFocusable()) win.setFocusable(false);
+    // Restore click-through before the full visual shape. On Windows this deliberately omits
+    // `forward`: forwarding makes the overlay and the underlying app race to set the OS cursor.
+    if (changed) {
+      if (FORWARDS_IGNORED_MOUSE_MOVES) win.setIgnoreMouseEvents(true, { forward: true });
+      else win.setIgnoreMouseEvents(true);
+    }
+    if (SUPPORTS_WINDOW_SHAPE) {
+      const area = win.getContentBounds();
+      win.setShape([{ x: 0, y: 0, width: area.width, height: area.height }]);
+    }
+    overlayInteractive = false;
   }
+  // macOS forwarding parks the native poll while ignored. Windows/Linux keep one native cursor
+  // owner; shaped interactive windows also poll so leaving the shape restores click-through.
+  if (changed && shouldShow() && overlayReady) startPointerTracking(interactive);
 }
 
 function stopPointerTracking(): void {
   if (pointerTimer) clearInterval(pointerTimer);
   pointerTimer = null;
 }
-function startPointerTracking(): void {
+function startPointerTracking(pollForwarded = false): void {
   stopPointerTracking();
   let previous: (PetOverlayPointer & { at: number }) | null = null;
   const sample = (): void => {
@@ -118,11 +163,11 @@ function startPointerTracking(): void {
       win.webContents.send('pet-overlay:pointer', point);
     } catch { /* display configuration can change between reads */ }
   };
-  // Windows and macOS can forward mousemove through a click-through window.
-  // Seed the current location once, then let the renderer own pointer proximity.
-  // Linux lacks that forwarding contract and retains the bounded native poll.
+  // macOS can forward mousemove through a click-through window. Windows intentionally does not:
+  // two Chromium surfaces setting a cursor for one physical move produces visible flicker.
+  // Linux and Windows retain the bounded native poll.
   sample();
-  if (FORWARDS_IGNORED_MOUSE_MOVES) return;
+  if (FORWARDS_IGNORED_MOUSE_MOVES && !pollForwarded) return;
   pointerTimer = setInterval(sample, POINTER_INTERVAL_MS);
   pointerTimer.unref?.();
 }
@@ -138,25 +183,40 @@ function fitOverlay(): void {
 async function currentActivities(): Promise<{ rows: PetActivity[]; nextAt: number | null }> {
   const now = Date.now();
   const blocked = new Set(blockedChatIds());
-  const rows = swarmState().agents.map(agent => petActivityForAgent(
+  const agents = swarmState().agents;
+  const rows = agents.filter(agent => agent.role !== 'prime').map(agent => petActivityForAgent(
     agent,
     sessionIdForConversation(agent.conversationId),
     !!agent.conversationId && blocked.has(agent.conversationId)
   ));
-  let nextAt: number | null = null;
+  const sessionIds = new Set(agents.filter(agent => agent.role === 'prime')
+    .map(agent => sessionIdForConversation(agent.conversationId))
+    .filter((id): id is string => !!id));
   const activeId = activeSessionId();
-  if (activeId && !rows.some(row => row.sessionId === activeId)) {
-    const session = await getSession(activeId).catch(() => null);
-    if (session && session.origin?.kind !== 'helper') {
-      const projected = petActivityForSession(
-        { ...session, activityExpiresAt: sessionActivityExpiresAt(session) },
-        !!session.conversationId && blocked.has(session.conversationId),
-        now
-      );
-      if (projected) { rows.unshift(projected.activity); nextAt = projected.nextAt; }
-    }
+  if (activeId) {
+    const active = await getSession(activeId).catch(() => null);
+    const taskId = active && petTaskSessionId(active);
+    if (taskId) sessionIds.add(taskId);
   }
-  return { rows: rows.slice(0, MAX_ACTIVITIES), nextAt };
+  let nextAt: number | null = null;
+  const sessionRows: PetActivity[] = [];
+  for (const id of sessionIds) {
+    const session = await getSession(id).catch(() => null);
+    // Worker lifecycle is already projected by its exact AgentInfo. Re-projecting whichever
+    // worker happened to write last made it replace the Prime task after a parallel run.
+    if (!session || session.origin?.kind === 'helper' || session.origin?.kind === 'worker') continue;
+    const projected = petActivityForSession(
+      { ...session, activityExpiresAt: sessionActivityExpiresAt(session) },
+      !!session.conversationId && blocked.has(session.conversationId),
+      now
+    );
+    if (!projected) continue;
+    sessionRows.push(projected.activity);
+    if (projected.nextAt !== null) nextAt = nextAt === null
+      ? projected.nextAt
+      : Math.min(nextAt, projected.nextAt);
+  }
+  return { rows: [...sessionRows, ...rows].slice(0, MAX_ACTIVITIES), nextAt };
 }
 
 export function refreshPetOverlayActivities(): void {
@@ -212,7 +272,11 @@ function showOwner(screenName: 'chat' | 'pets', sessionId?: string): void {
 function registerOverlayIpc(): void {
   if (ipcRegistered) return;
   ipcRegistered = true;
-  ipcMain.on('pet-overlay:interactive', (event, value: unknown) => { if (validSender(event.sender.id)) setInteractive(value === true); });
+  ipcMain.on('pet-overlay:interactive', (event, value: unknown) => {
+    if (!validSender(event.sender.id) || !value || typeof value !== 'object') return;
+    const request = value as Record<string, unknown>;
+    setInteractive(request.interactive === true, request.regions);
+  });
   ipcMain.on('pet-overlay:focusOwner', event => { if (validSender(event.sender.id)) focusOwner(); });
   ipcMain.on('pet-overlay:openLibrary', event => { if (validSender(event.sender.id)) showOwner('pets'); });
   ipcMain.on('pet-overlay:hidePet', (event, id: unknown) => {
@@ -259,12 +323,12 @@ async function ensureOverlay(): Promise<BrowserWindow> {
     lastSnapshotSent = null;
     win.webContents.send('pet-overlay:bounds', bounds());
     sendLibrary(); sendSnapshot(true);
-    if (shouldShow()) { win.showInactive(); startPointerTracking(); }
+    if (shouldShow()) { win.showInactive(); startPointerTracking(overlayInteractive === true); }
     sendControl(true);
   });
   const gone = (): void => {
     if (overlay !== win) return;
-    stopPointerTracking(); overlayReady = false; overlay = null; lastSnapshotSent = null; sendControl();
+    stopPointerTracking(); overlayReady = false; overlayInteractive = null; overlay = null; lastSnapshotSent = null; sendControl();
   };
   win.on('closed', gone);
   win.webContents.on('render-process-gone', gone);
@@ -287,7 +351,7 @@ async function syncVisibility(): Promise<void> {
     if (!shouldShow()) return void syncVisibility();
     sendLibrary(); sendSnapshot();
     if (overlayReady && !win.isVisible()) win.showInactive();
-    startPointerTracking(); sendControl();
+    startPointerTracking(overlayInteractive === true); sendControl();
   } catch (error) { logWarn(`pet overlay: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
@@ -329,7 +393,7 @@ export async function shutdownPetOverlay(): Promise<void> {
   screen.removeListener('display-metrics-changed', fitOverlay);
   screen.removeListener('display-added', fitOverlay);
   screen.removeListener('display-removed', fitOverlay);
-  const win = overlay; overlay = null; overlayReady = false;
+  const win = overlay; overlay = null; overlayReady = false; overlayInteractive = null;
   if (win && !win.isDestroyed()) win.destroy();
   dismissedPetIds.clear();
   lastSnapshotSent = null; lastControlSent = null;

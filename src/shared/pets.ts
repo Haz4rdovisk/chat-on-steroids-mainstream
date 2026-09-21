@@ -113,6 +113,14 @@ export interface PetOverlayPointer {
   y: number;
 }
 
+/** Window-local native hit region. The fullscreen surface remains click-through outside these bounds. */
+export interface PetOverlayHitRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface PetOverlayBounds {
   width: number;
   height: number;

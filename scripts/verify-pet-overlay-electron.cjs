@@ -49,6 +49,15 @@ app.on('web-contents-created', (_event, contents) => {
 app.on('browser-window-created', (_event, win) => {
   if (win.getTitle() !== 'Pets' || found) return;
   found = true;
+  const nativeShapes = [];
+  const setShape = win.setShape.bind(win);
+  win.setShape = regions => { nativeShapes.push(regions); return setShape(regions); };
+  const ignoredMouseCalls = [];
+  const setIgnoreMouseEvents = win.setIgnoreMouseEvents.bind(win);
+  win.setIgnoreMouseEvents = (ignore, options) => {
+    ignoredMouseCalls.push({ ignore, forward: options?.forward === true });
+    return setIgnoreMouseEvents(ignore, options);
+  };
   win.webContents.once('did-finish-load', () => {
     setTimeout(async () => {
       try {
@@ -100,14 +109,29 @@ app.on('browser-window-created', (_event, win) => {
         assert.ok(minY >= geometry.body.top * dpr - 2 && maxY <= geometry.body.bottom * dpr + 2,
           'The sprite escaped its cell vertically.');
         if (process.platform === 'win32') {
+          assert.ok(ignoredMouseCalls.some(call => call.ignore),
+            `The idle overlay must be click-through: ${JSON.stringify(ignoredMouseCalls)}`);
+          assert.equal(ignoredMouseCalls.some(call => call.ignore && call.forward), false,
+            `Windows must not forward ignored mouse movement to a second cursor owner: ${JSON.stringify(ignoredMouseCalls)}`);
+          const hoverOwner = BrowserWindow.getAllWindows().find(candidate => candidate !== win && candidate.getTitle() === 'Chat On Steroids');
+          assert.ok(hoverOwner, 'The hover regression requires the visible owner behind Pets.');
+          await hoverOwner.webContents.executeJavaScript(`(() => {
+            clearInterval(window.__petBehindTimer);
+            window.__petBehindTicks = 0;
+            window.__petBehindTimer = setInterval(() => window.__petBehindTicks++, 50);
+          })()`);
           const hoverX = Math.round(geometry.shell.x + geometry.shell.width / 2);
           const hoverY = Math.round(geometry.shell.y + geometry.shell.height / 2);
           win.webContents.sendInputEvent({ type: 'mouseMove', x: 10, y: 10 });
           await new Promise(resolve => setTimeout(resolve, 50));
           assert.equal(win.isFocusable(), false, 'Pointer outside pet content must keep the overlay click-through.');
+          const ticksBeforeHover = await hoverOwner.webContents.executeJavaScript('window.__petBehindTicks');
           win.webContents.sendInputEvent({ type: 'mouseMove', x: hoverX, y: hoverY });
-          await new Promise(resolve => setTimeout(resolve, 50));
-          assert.equal(win.isFocusable(), true, 'Forwarded pointer proximity must make the pet interactive.');
+          await new Promise(resolve => setTimeout(resolve, 500));
+          assert.equal(win.isFocusable(), false, 'Pet interaction must not activate an occluding desktop window.');
+          const ticksAfterHover = await hoverOwner.webContents.executeJavaScript('window.__petBehindTicks');
+          assert.ok(ticksAfterHover - ticksBeforeHover >= 4,
+            `The owner behind an interactive pet must keep running; ticks=${ticksBeforeHover}->${ticksAfterHover}.`);
           win.webContents.sendInputEvent({ type: 'mouseMove', x: 10, y: 10 });
           await new Promise(resolve => setTimeout(resolve, 50));
           assert.equal(win.isFocusable(), false, 'Leaving pet content must restore native click-through.');
@@ -143,6 +167,35 @@ app.on('browser-window-created', (_event, win) => {
         assert.ok(task.cardRect.height <= 34, `Task rows must remain single-line: ${JSON.stringify(task.cardRect)}`);
         fs.writeFileSync(path.join(userData, 'task-strip.png'), (await win.webContents.capturePage()).toPNG());
         console.log(`task=${JSON.stringify(task)}`);
+        win.webContents.send('pet-overlay:snapshot', {
+          visible: true, dismissedPetIds: [], level: 'review',
+          activities: [{ id: 'task-smoke', title: 'Prime', body: 'Ready for review', level: 'review', sessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }],
+          theme: 'dark',
+          appearance: {
+            light: { background: '#f4f4f5', sidebar: '#e9edf2', accent: '#486f9d', contrast: 45 },
+            dark: { background: '#181818', sidebar: '#1a2129', accent: '#b0cbed', contrast: 60 },
+            font: 'system', fontSize: 14, translucentSidebar: true
+          }
+        });
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const reviewBadge = await win.webContents.executeJavaScript(`(() => {
+          const shell = document.querySelector('.pet-shell');
+          const badge = shell.querySelector('.pet-badge');
+          const probe = document.createElement('i');
+          probe.style.cssText = 'position:fixed;background:var(--green-wash);color:var(--green);border:1px solid var(--green-line)';
+          document.body.append(probe);
+          const badgeStyle = getComputedStyle(badge), probeStyle = getComputedStyle(probe);
+          const result = { level: shell.dataset.level, background: badgeStyle.backgroundColor, color: badgeStyle.color,
+            border: badgeStyle.borderTopColor, expectedBackground: probeStyle.backgroundColor,
+            expectedColor: probeStyle.color, expectedBorder: probeStyle.borderTopColor };
+          probe.remove();
+          return result;
+        })()`);
+        assert.equal(reviewBadge.level, 'review');
+        assert.equal(reviewBadge.background, reviewBadge.expectedBackground,
+          `Completed task badge must use the green surface: ${JSON.stringify(reviewBadge)}`);
+        assert.equal(reviewBadge.color, reviewBadge.expectedColor);
+        assert.equal(reviewBadge.border, reviewBadge.expectedBorder);
         win.webContents.send('pet-overlay:snapshot', {
           visible: true, dismissedPetIds: [], level: 'running',
           activities: Array.from({ length: 8 }, (_, index) => ({

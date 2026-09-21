@@ -101,6 +101,8 @@ it('uses one spritesheet body per pet while preserving specials, multi-pet tasks
 
   const shells = [...dom.window.document.querySelectorAll<HTMLElement>('.pet-shell')];
   expect(shells).toHaveLength(2);
+  expect(setInteractive.mock.lastCall?.[0]).toBe(false);
+  expect(setInteractive.mock.lastCall?.[1]).toEqual([]);
   expect(dom.window.document.querySelectorAll('.pet-body')).toHaveLength(2);
   expect(dom.window.document.querySelector('canvas,.pet-canvas,.pet-sprite,.pet-bat')).toBeNull();
   for (const shell of shells) {
@@ -117,6 +119,16 @@ it('uses one spritesheet body per pet while preserving specials, multi-pet tasks
   expect((dom.window.document.getElementById('petTray') as HTMLElement).hidden).toBe(false);
   (dom.window.document.querySelector('.pet-card') as HTMLButtonElement).click();
   expect(openActivity).toHaveBeenCalledWith('session-one');
+
+  snapshotListener!({
+    ...runningSnapshot,
+    level: 'review',
+    activities: [{ ...runningSnapshot.activities[0]!, body: 'Ready for review', level: 'review' }]
+  });
+  expect(dom.window.document.querySelector<HTMLElement>('.pet-shell[data-pet-id="willow"]')?.dataset.level).toBe('review');
+  expect(badges[0]!.hidden).toBe(false);
+  expect(badges[0]!.textContent).toBe('1');
+  snapshotListener!(runningSnapshot);
 
   const tur = dom.window.document.querySelector<HTMLElement>('.pet-shell[data-pet-id="tur-tur-sahur"]')!;
   expect(tur.style.left).toBe('');
@@ -136,17 +148,19 @@ it('uses one spritesheet body per pet while preserving specials, multi-pet tasks
   dom.window.document.dispatchEvent(new dom.window.MouseEvent('mousemove', {
     clientX: Number(petX) + 80, clientY: Number(petY) + 80, bubbles: true
   }));
-  expect(setInteractive).toHaveBeenLastCalledWith(true);
+  expect(setInteractive).toHaveBeenLastCalledWith(true, expect.arrayContaining([
+    expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) })
+  ]));
   pointer(tur, 'pointerdown', 120, 120, 7);
   pointer(tur, 'pointermove', 190, 150, 7);
   expect(tur.dataset.state).toBe('held');
   pointerListener!({ x: 700, y: 700 });
-  expect(setInteractive).toHaveBeenLastCalledWith(true);
+  expect(setInteractive).toHaveBeenLastCalledWith(true, expect.any(Array));
   pointer(tur, 'pointerup', 190, 150, 7);
   expect(tur.dataset.state).toBe('landing');
   expect(focusOwner).not.toHaveBeenCalled();
   dom.window.document.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 700, clientY: 700, bubbles: true }));
-  expect(setInteractive).toHaveBeenLastCalledWith(false);
+  expect(setInteractive).toHaveBeenLastCalledWith(false, []);
 
   pointer(tur, 'pointerdown', 120, 120, 8);
   pointer(tur, 'pointerup', 120, 120, 8);

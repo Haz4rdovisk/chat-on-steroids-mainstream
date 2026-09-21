@@ -12,7 +12,7 @@ assert.match(label, /^[a-z0-9-]+$/i);
 const output = path.join(root, 'outputs/pet-performance', label);
 const check = process.argv.includes('--check');
 const fullHost = process.argv.includes('--full-host');
-const forwardsIgnoredMouseMoves = process.platform === 'win32' || process.platform === 'darwin';
+const forwardsIgnoredMouseMoves = process.platform === 'darwin';
 
 async function buildAndRun() {
   const { build } = await import('vite');
@@ -209,6 +209,12 @@ async function measure() {
       if (fullHost && forwardsIgnoredMouseMoves) {
         assert.equal(records.find(r => r.name === 'host-static').pointerSamplesPerSecond, 0,
           'Forwarded pointer platforms must not retain a native polling loop');
+      } else if (fullHost && process.platform === 'win32') {
+        const host = records.find(r => r.name === 'host-static');
+        assert.ok(host.pointerSamplesPerSecond >= 15 && host.pointerSamplesPerSecond <= 25,
+          `Windows cursor ownership must use only the bounded 50 ms native poll: ${host.pointerSamplesPerSecond}`);
+        assert.ok(host.pointerMessagesPerSecond <= 6,
+          `A stationary Windows cursor must suppress unchanged IPC: ${host.pointerMessagesPerSecond}`);
       }
       for (const name of ['reduced-motion', 'hidden']) {
         assert.equal(records.find(r => r.name === name).rafPerSecond, 0, name + ' has no running animation clock');

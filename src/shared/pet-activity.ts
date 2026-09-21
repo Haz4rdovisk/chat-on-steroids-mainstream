@@ -4,6 +4,13 @@ import type { PetActivity, PetActivityLevel } from './pets.js';
 
 export const PET_REVIEW_MS = 45_000;
 
+/** Workers do not replace their Prime's task when they become the last recorded session. */
+export function petTaskSessionId(session: SessionSummary): string | null {
+  if (session.origin?.kind === 'helper') return null;
+  if (session.origin?.kind === 'worker') return session.origin.fromSessionId ?? null;
+  return session.id;
+}
+
 export function petActivityForAgent(agent: AgentInfo, sessionId: string | null, blocked: boolean): PetActivity {
   let level: PetActivityLevel;
   let body: string;
@@ -35,8 +42,17 @@ export function petActivityForSession(
   now = Date.now()
 ): { activity: PetActivity; nextAt: number | null } | null {
   const working = sessionWorkingAt(session, now);
-  const reviewDeadline = (session.lastAssistantFinalAt ?? 0) + PET_REVIEW_MS;
-  const recentFinal = reviewDeadline > now;
+  // A completed turn is the authoritative task boundary even when the provider emitted no
+  // final prose (for example a tool-only answer). Older recordings can have a stable final but
+  // no outcome, so retain that legacy evidence without letting a later stopped/failed turn
+  // resurrect an earlier green completion.
+  const completedAt = session.lastTurnOutcome === 'completed'
+    ? Math.max(session.lastTurnEndAt ?? 0, session.lastAssistantFinalAt ?? 0)
+    : session.lastTurnOutcome === null || session.lastTurnOutcome === undefined
+      ? (session.lastAssistantFinalAt ?? 0)
+      : 0;
+  const reviewDeadline = completedAt + PET_REVIEW_MS;
+  const recentFinal = !session.activeTurnId && completedAt > 0 && reviewDeadline > now;
   if (!blocked && !working && !recentFinal) return null;
   const fallbackActivityDeadline = Math.max(session.startedAt, session.lastToolCallAt ?? 0) + CHAT_ACTIVE_MS;
   const activityDeadline = session.activityExpiresAt === undefined ? fallbackActivityDeadline : (session.activityExpiresAt ?? 0);
@@ -53,6 +69,8 @@ export function petActivityForSession(
 }
 
 export function highestPetActivityLevel(rows: readonly PetActivity[]): PetActivityLevel {
-  const rank: Record<PetActivityLevel, number> = { idle: 0, review: 1, running: 2, waiting: 3, failed: 4 };
+  // Sleeping workers are reusable capacity, not a stronger task state than active work or a
+  // completed result awaiting review. Failure remains the only state that overrides both.
+  const rank: Record<PetActivityLevel, number> = { idle: 0, waiting: 1, review: 2, running: 3, failed: 4 };
   return rows.reduce<PetActivityLevel>((best, row) => rank[row.level] > rank[best] ? row.level : best, 'idle');
 }
