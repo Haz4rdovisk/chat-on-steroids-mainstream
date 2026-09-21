@@ -248,7 +248,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Permissions and settings | `config.ts` / `config.json` | Validate every load/save; enforce effective current capabilities at use. |
 | Credentials | `secrets.ts` / encrypted `secrets.bin`; plugin OAuth's encrypted installation store | Main process only; publish updated cache after the encrypted write. |
 | Session/current chat/project | `store.ts` / `sessions/<id>/meta.json` | Rebind is the semantic A→B commit. |
-| Exact request ownership | `correlation.ts` / `state/request-correlations.json` plus recorded proof | First exact proof wins; retain local session epoch; reconcile from history on startup. |
+| Exact request ownership | `correlation.ts` / `state/request-correlations.json` plus recorded proof | First exact proof wins; retain local session epoch; new proof is committed before browser acknowledgement. Versioned legacy snapshots reconcile from history once. |
 | Authored message | `store.ts` / canonical message shard | Replace by stable identity, preserving origin chronology. |
 | Agent progress plan | `request-plans.ts` → `store.ts::updateSessionPlan` / `sessions/<id>/plan.json` | Request-scoped storage before proof; exact session and invocation ordering on attachment; atomically replace the whole plan. |
 | Input and checkpoints | `input.ts` / `state/session-input.json` | Serialized acceptance, frozen payload, exclusive claim and receipt; stages belong here. |
@@ -552,8 +552,10 @@ or “only generating chat” is never a replacement proof.
 
 `correlation.ts` keeps the first exact request owner and its **local session epoch**. Conflicting
 claims do not overwrite it. Proof has no time TTL but the index is bounded to 50,000 recently
-observed request ids; recorded exact calls reconcile the index on startup even when a snapshot
-already exists. Late proof can repair Unattributed history only to the proved historical owner.
+observed request ids. A complete current snapshot is committed before the browser receives an
+ownership acknowledgement and is authoritative on later starts. Older snapshots reconcile
+recorded exact calls once and publish that migration boundary before traffic is admitted. Late
+proof can repair Unattributed history only to the proved historical owner.
 
 Unresolved requests with an id get the recorder's 20-second production evidence grace. A
 headerless call has no exact proof to await and lands Unattributed immediately. Evidence waits
@@ -2680,8 +2682,11 @@ of appearance controls.
 `main/pet-library.ts` validates imported CoS Pets (`pet.json`, `atlas.png`,
 `animations.json`; 8×12 cells, 96 frames), and owns enabled/favorite membership.
 `main/pet-overlay.ts` hosts a transparent desktop-sized Pets window independent of
-the main window, projects exact session/swarm activity, and switches native mouse
-click-through only near interactive content. Its private persistent Chromium
+the main window and projects exact session/swarm activity. The fullscreen surface remains
+non-focusable. On Windows/Linux, entering interactive content applies a bounded native window
+shape around the pets/tray/menu before disabling click-through, so the transparent desktop-sized
+rectangle never becomes an occluding input window. Leaving restores click-through before the full
+visual shape. Its private persistent Chromium
 partition retains per-pet positions across restarts. `renderer/pet-overlay.ts`
 draws one 160×160 CSS background cell per pet from the native-size atlas, with
 pixel-exact frame offsets and `image-rendering: pixelated`; it does not scale the
@@ -2699,8 +2704,14 @@ anchors the task badge and compact tray. Its task rows keep state, title and
 summary on one line, scroll within a bounded height, and open their proven local
 session. Task transitions use the authored atlas: running/start → `spawn`,
 waiting/sleeping → `look`, failed/blocked → `angry`, and finished/review →
-`celebrate`; ordinary idle/walk behavior continues between transitions. The
-library's copied creation brief may reuse `$hatch-pet` for canonical-reference,
+`celebrate`; ordinary idle/walk behavior continues between transitions. The Prime task derives
+from its canonical session rather than the broker's reusable `active` lifecycle; workers retain
+their exact AgentInfo state. When a worker is the last recorded session after its family parks,
+its durable `origin.fromSessionId` resolves the Prime task without guessing an unlinked parent.
+A completed turn keeps one green review row and green task badge for 45 seconds even when
+it ends with tools and no final prose. Failed overrides running, running overrides review, and
+review overrides sleeping/waiting; the existing review deadline removes the row. The library's
+copied creation brief may reuse `$hatch-pet` for canonical-reference,
 generation and visual-QA discipline only. Its Codex 8×9/192×208/WebP contract is
 not import-compatible; the CoS 8×12/160×160/PNG manifest remains authoritative.
 `renderer/pet.ts` is only the main-window controller.
@@ -2710,11 +2721,14 @@ stationary sprites sleep until that deadline, while travel, carry, throw and
 interpolated props retain display-frame updates. Hidden documents and static
 reduced-motion poses park the clock. The overlay owns at most one pending timer or
 animation frame and cancels it on pause, interaction rescheduling and disposal.
-Windows and macOS forward mouse movement through the ignored transparent window;
-the renderer owns proximity and asks main only when native click-through must
-change. Linux retains the bounded cursor poll because Electron does not provide
-that forwarding contract there. Main seeds the current cursor once when showing
-the overlay and suppresses unchanged control/activity projections. Pet travel uses
+macOS forwards mouse movement through the ignored transparent window. Windows deliberately does
+not: Electron forwarding lets both Chromium surfaces publish a cursor for one physical move.
+Windows and Linux instead use main's bounded native cursor poll, while the renderer owns proximity
+and publishes quantized bounded hit regions only when native click-through must change.
+Moving interactive pets update those regions only after crossing the quantization boundary.
+While a shaped window is interactive, main temporarily samples the native cursor so movement
+outside the shape can restore click-through; the poll stops again immediately on leave.
+Main suppresses unchanged pointer/control/activity projections. Pet travel uses
 composited transforms, and prop roots have no desktop-sized layout box; neither
 movement nor an idle interaction surface may invalidate the fullscreen layout.
 Asset production remains in `docs/pet/PRODUCTION.md`; unit/DOM tests plus
@@ -3352,6 +3366,17 @@ shared-tree change may already have addressed them.
   Recording Off lacks a uniform runtime gate for retained per-chat overrides. Attempt
   invalidation now preserves debt, but these remaining controls still need one durable
   semantic transaction and effective current-setting enforcement.
+- **Startup Usage derivation:** the background warmup is not awaited by the shell, but an invalid
+  cache row still reads and projects that session's complete history immediately after startup.
+  Large migrations can contend with first-turn work. Move rebuild off the startup hot path or
+  maintain the required facts incrementally at the recorder owner; do not add a second polling
+  cache. See `docs/worklog-2026-09-21-performance-follow-up-inventory.md`.
+- **Live-response presentation cost:** alternate-shell evidence scans are bounded for safety, and
+  assistant reveal is presentation-only, but neither path has a production performance budget.
+  Mutation-driven Fiber scans can repeat during generation, while fake streaming reparses and
+  replaces the accumulated Markdown. Measure exact scan/revision/paint cost before changing
+  evidence or recording semantics. Internal Chromium's always-live parked views can multiply this
+  shared work and require a separate liveness-preserving composition design.
 
 Do not restore obsolete claims while investigating: two MCP surfaces, one global prime run,
 three browser command kinds, fixed 60s Unattributed repair, tab-query

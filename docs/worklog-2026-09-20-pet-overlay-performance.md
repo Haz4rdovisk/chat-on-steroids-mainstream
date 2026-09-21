@@ -14,11 +14,20 @@ The former performance fixture loaded only the renderer in an 1100×850 window, 
 it could not measure the native poll, fullscreen transparent host, always-on-top
 composition, IPC, or an underlying owner window.
 
+A later live Windows reproduction exposed a second host boundary: proximity changed
+the entire desktop-sized transparent `BrowserWindow` from ignored/non-focusable to
+interactive/focusable. Windows then treated that rectangle as an occluding window.
+The main renderer, elapsed-time indicator and video surfaces behind the pet could
+pause or disappear even though the overlay pixels remained transparent.
+
 ## Repair
 
-- Windows and macOS now use Electron's forwarded mouse-move path. Main seeds the
-  current cursor once when showing Pets and creates no recurring cursor timer.
-  Linux retains the existing bounded poll as the platform fallback.
+- macOS uses Electron's forwarded mouse-move path. Windows and Linux use the bounded native
+  cursor poll; unchanged positions do not publish IPC.
+- The overlay remains non-focusable during hover and drag. Before native hit-testing
+  is enabled on Windows/Linux, main applies a validated window shape containing only
+  the pets, visible props, task tray and context menu. The platform proximity owner also detects
+  leaving that shaped region and restores click-through.
 - The renderer calculates ordinary pet proximity from `PetMachine.position`
   instead of forcing a layout read. Tray and menu geometry are read only while
   those surfaces are open.
@@ -34,6 +43,36 @@ composition, IPC, or an underlying owner window.
 No atlas, authored frame duration, autonomous decision, task reaction, drag,
 click, context-menu, visibility, favorite, imported-pet, or library contract was
 changed.
+
+## Cursor-region follow-up — 2026-09-21
+
+Physical Windows sampling reproduced 553 `hand`↔`arrow` changes during 856 real mouse moves while
+`WindowFromPoint` remained owned by the CoS window. Electron's `forward: true` sent each ignored
+overlay move to a second Chromium renderer, so the overlay's `cursor: grab` raced the underlying
+control's cursor. Synthetic movement did not reproduce that native route. Windows no longer uses
+ignored-mouse forwarding; its existing 50 ms native cursor sample is now the sole proximity owner
+until the bounded overlay becomes interactive. Click-through still precedes restoration of the
+full visual shape, so the fullscreen rectangle never becomes an interactive occluder. macOS keeps
+forwarding and Linux keeps polling. The Electron smoke rejects any forwarded ignored-mouse call on
+Windows. Physical post-fix cursor behavior still needs user confirmation from the rebuilt package.
+
+## Task indicator follow-up — 2026-09-21
+
+Three projection errors explained why the badge could disappear at completion or remain non-green:
+
+- Prime used the broker's long-lived `active` lifecycle instead of its canonical session result.
+- Review expiry was anchored only to final assistant prose, so a completed tool-only turn had no
+  green review interval.
+- Sleeping workers outranked completed review in the aggregate badge color.
+
+Prime now projects from its exact session while workers retain their AgentInfo lifecycle. A
+worker left as the recorder's last session resolves the Prime through its durable
+`origin.fromSessionId` after the family parks; an unlinked worker grants no parent task. A
+`turn_end: completed` anchors the same 45-second review interval even without final prose, and the
+aggregate order is failed, running, review, waiting, idle. The existing one-shot expiry timer owns
+removal after the review interval; no additional watcher or mirrored task state was introduced.
+The review badge now uses the semantic green surface, text and border tokens; the previous CSS
+changed only its border, so the numbered circle still appeared neutral despite the correct state.
 
 ## Measured evidence
 
@@ -58,10 +97,11 @@ CPU during sustained pet actions in this fixture.
 
 - Five focused Pet suites passed: 15/15 tests.
 - Typecheck and production build passed.
-- `scripts/verify-pet-performance.cjs optimized-full-host --full-host --check`
-  passed, including the no-polling and zero-static-RAF assertions.
+- The earlier `optimized-full-host` run passed its then-current forwarded-pointer and
+  zero-static-RAF assertions. The Windows polling budget must be rerun after visual approval.
 - The built Electron overlay smoke passed. It measured a native 160×160 body and
-  visible atlas pixels, exercised forwarded proximity and click-through state,
+  visible atlas pixels, exercised proximity and click-through state,
+  verified the overlay stayed non-focusable and an owner timer kept advancing during hover,
   dragged and persisted the pet, opened the task tray and context menu, temporarily
   hid/restored the active pet, minimized the owner, and restored the same owner
   screen on click.
