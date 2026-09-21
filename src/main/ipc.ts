@@ -120,7 +120,8 @@ import {
   pauseSwarmForDisable,
   persistAgentAuthorityNow,
   resetSwarm,
-  swarmState
+  swarmState,
+  swarmStateForPrimeConversations
 } from './agents.js';
 import { tokenPressure } from '../shared/session.js';
 import { forgetWorkspaceRoot, renameWorkspaceRoot } from './workspace.js';
@@ -1236,6 +1237,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
   // ----------------------------------------------------------------- swarm
 
   handle('swarm:get', async () => swarmState());
+  handle('swarm:getForSession', async (payload) => {
+    const { id } = z.object({ id: z.string().min(1).max(200) }).parse(payload);
+    const session = await getSession(id);
+    if (!session) return { enabled: getConfig().multiAgent.enabled, running: false, retainedHistory: false, agents: [] };
+    const conversations = [...new Set([...session.chatIds, session.conversationId].filter((value): value is string => Boolean(value)))];
+    return swarmStateForPrimeConversations(conversations);
+  });
   handle('swarm:reset', async () => {
     resetSwarm();
     if (!(await persistAgentAuthorityNow())) {

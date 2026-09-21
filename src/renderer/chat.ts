@@ -174,6 +174,8 @@ function ownsComposerDraft(owner: ComposerDraftOwner): boolean {
 function replaceComposerDraft(): void { composerDraftGeneration++; skillPicker?.close(); }
 let pendingNewInput: { id: string; generation: number } | null = null;
 let agentPanel: ReturnType<typeof createAgentPanel> | null = null;
+let selectedSwarm: { sessionId: string; state: SwarmState } | null = null;
+let selectedSwarmGeneration = 0;
 let filePanel: ReturnType<typeof createFilePanel> | null = null;
 const expandedWorkers = new Set<string>();
 const inputDrafts = new Map<string, string>();
@@ -760,7 +762,7 @@ function paintSessions(): void {
   chatList.replaceChildren(...rows);
   if (focusedProject) projectSections.find(section => section.dataset.projectId === focusedProject)
     ?.querySelector<HTMLElement>('.project-heading')?.focus({ preventScroll: true });
-  agentPanel?.update(selectedId, sessions.filter(entry => entry.origin?.kind === 'worker' && entry.origin.fromSessionId === selectedId && selectedId !== null));
+  updateAgentPanel();
   filePanel?.update(selectedLocalProject());
   workspaceTerminal?.update(selectedLocalProject());
   badgeKey = badgeSignature();
@@ -768,6 +770,29 @@ function paintSessions(): void {
   $('sessionsEmpty').hidden = rows.length > 0;
 
   scheduleToolActivityExpiry();
+}
+
+function updateAgentPanel(): void {
+  agentPanel?.update(
+    selectedId,
+    sessions.filter(entry => entry.origin?.kind === 'worker' && entry.origin.fromSessionId === selectedId && selectedId !== null),
+    selectedId && selectedSwarm?.sessionId === selectedId ? selectedSwarm.state : null
+  );
+}
+
+/** One broker read per selection or broker transition; no polling and no session-derived state. */
+async function refreshSelectedSwarm(): Promise<void> {
+  const sessionId = selectedId;
+  const generation = ++selectedSwarmGeneration;
+  if (!sessionId) {
+    selectedSwarm = null;
+    updateAgentPanel();
+    return;
+  }
+  const state = await run(api.getSessionSwarm(sessionId));
+  if (!state || generation !== selectedSwarmGeneration || selectedId !== sessionId) return;
+  selectedSwarm = { sessionId, state };
+  updateAgentPanel();
 }
 
 /** Repaint once at the nearest activity-window boundary; no polling clock is needed. */
@@ -3186,6 +3211,7 @@ function paintSwarm(state: SwarmState): void {
   // Session rows borrow their live badge from the swarm, so a worker that just went to sleep
   // must not keep saying "active" until some unrelated session update repaints the list.
   paintSessions();
+  void refreshSelectedSwarm();
   const list = $('swarmList');
   if (state.agents.length === 0) {
     list.replaceChildren(
@@ -4365,6 +4391,7 @@ function selectSession(id: string): void {
   $('finishQueue').replaceChildren(); $('finishQueue').hidden = true;
   newChatSelected = false;
   selectedId = id;
+  if (ownerChanged) selectedSwarm = null;
   const selected = sessions.find(row => row.id === id);
   applyComposerSessionModel(`${id}:${selectionGeneration}`, composerSessionSelection(selected) ?? null);
   const parent = selected?.origin?.kind === 'worker' ? selected.origin.fromSessionId : null;
@@ -4390,6 +4417,7 @@ function selectSession(id: string): void {
     handoffLoadGeneration++;
   }
   paintSessions();
+  if (ownerChanged) void refreshSelectedSwarm();
   if (ownerChanged) {
     paintDetail(false);
     paintHandoff();
@@ -4403,7 +4431,7 @@ function selectNewChat(projectId: string | null = null): void {
   timelineFollowBottom = true;
   inputQueueGeneration++;
   $('finishQueue').replaceChildren(); $('finishQueue').hidden = true;
-  newChatSelected = true; selectedId = null; selectedProjectId = projectId; detailFor = null; detailCursor = null;
+  newChatSelected = true; selectedId = null; selectedSwarm = null; selectedSwarmGeneration++; selectedProjectId = projectId; detailFor = null; detailCursor = null;
   if (projectId) expandedProjects.add(projectId);
   applyComposerSessionModel(null, null);
   // New Chat selects its existing draft, just like a session. Navigation is not
@@ -4437,7 +4465,7 @@ export function initChat(next: Deps): void {
   agentPanel = createAgentPanel({
     host: document.querySelector<HTMLElement>('[data-panel="chat"]')!, toggle: agentToggle,
     onShow: () => filePanel?.hide(true),
-    load: id => run(api.getSession(id, { limit: 160 })), openMain: selectSession, working: sessionWorking,
+    load: id => run(api.getSession(id, { limit: 160 })), openMain: selectSession,
     render: (source, id, current) => {
       let boundary = '';
       const rows = foldAgentCommunication(source).flatMap(event => {

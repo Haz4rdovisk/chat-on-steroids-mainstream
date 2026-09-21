@@ -2525,8 +2525,9 @@ input[readonly] {
   color: var(--soft);
 }
 
-/* Let the hover surface breathe beyond the text column without moving its content. */
-.ev-tool_call .tool {
+/* Let foldable activity hover surfaces breathe beyond the text column without moving content. */
+.ev-tool_call .tool,
+.ev-compaction .tool {
   margin-inline: -10px;
 }
 
@@ -2555,7 +2556,8 @@ input[readonly] {
   list-style: none;
 }
 
-.ev-tool_call .tool > summary {
+.ev-tool_call .tool > summary,
+.ev-compaction .tool > summary {
   padding-inline: 10px;
 }
 
@@ -3539,9 +3541,15 @@ select option::checkmark { order: 1; margin-inline-start: auto; color: var(--ink
 .agent-panel-header .btn { padding: 6px 10px; }
 .agent-panel-body { min-height: 0; overflow-y: auto; padding: 24px; }
 .agent-panel-body h3 { color: var(--soft); font-size: calc(13px * var(--text-scale, 1)); font-weight: 450; margin: 12px 0 18px; }
-.agent-panel-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 8px; border: 0; border-radius: 10px; background: transparent; color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
-.agent-panel-row:hover { background: var(--hover); }
-.agent-panel-row > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-panel-row { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 12px 8px; border: 0; border-radius: 10px; background: transparent; color: var(--ink); text-align: left; font: inherit; }
+button.agent-panel-row { cursor: pointer; }
+button.agent-panel-row:hover { background: var(--hover); }
+.agent-panel-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.agent-panel-row-title { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.agent-panel-row-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.agent-panel-row-title .chip { flex: 0 0 auto; }
+.agent-panel-task, .agent-panel-error { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: calc(12px * var(--text-scale, 1)); }
+.agent-panel-error { color: var(--red); }
 .agent-panel-body .ev { display: block; margin: 24px 0; }
 .agent-panel-body :is(.ev-tool_call, .ev-page_tool, .ev-agent_message) { margin: 0; }
 .agent-panel-body .ev-body { min-width: 0; }

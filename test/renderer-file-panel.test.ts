@@ -596,8 +596,7 @@ it('shares the right work slot exclusively with the Sub-agents panel', async () 
     onShow: () => files.hide(),
     load: async () => ({ events: [] }),
     render: () => [],
-    openMain: () => undefined,
-    working: () => false
+    openMain: () => undefined
   });
   files = createFilePanel({
     host,
@@ -611,7 +610,7 @@ it('shares the right work slot exclusively with the Sub-agents panel', async () 
     startedAt: 1, updatedAt: 1, endedAt: null, events: 0, agents: ['worker-1'],
     estimatedTokens: 0, contextTokens: 0,
     origin: { kind: 'worker', fromSessionId: 'prime-session', agentId: 'worker-1', task: 'Inspect' }
-  } as any]);
+  } as any], null);
 
   toggle.click(); await tick();
   expect(files.visible()).toBe(true);
@@ -635,7 +634,7 @@ it('gives Files and Sub-agents the same horizontally resizable work-panel width'
   document.body.append(agentToggle);
   const agents = createAgentPanel({
     host, toggle: agentToggle, load: async () => ({ events: [] }), render: () => [],
-    openMain: () => undefined, working: () => false
+    openMain: () => undefined
   });
   const files = createFilePanel({ host, toggle, onAttach: () => undefined });
   files.update(projectA);
@@ -647,7 +646,7 @@ it('gives Files and Sub-agents the same horizontally resizable work-panel width'
   const width = host.style.getPropertyValue('--work-panel-width');
   expect(width).toMatch(/^\d+px$/);
 
-  agents.update('prime-session', []);
+  agents.update('prime-session', [], null);
   const agentHandle = host.querySelector<HTMLElement>('.agent-panel .work-panel-resize')!;
   expect(agentHandle.getAttribute('aria-valuenow')).toBe(width.replace('px', ''));
   agentHandle.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));

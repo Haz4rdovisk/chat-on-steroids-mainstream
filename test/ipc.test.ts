@@ -75,6 +75,7 @@ const { pendingCommands, resetBridgeForTests, setBrowserOpener, startBridge, sto
 );
 const {
   bindConversation,
+  failAgent,
   finishAgent,
   onRetiredWorkersPersist,
   onRetiredWorkersPersistNow,
@@ -373,6 +374,40 @@ it('projects exact retained worker parents without adopting same-name unrelated 
   expect(result.data.sessions.find((row: any) => row.id === child.id).origin.fromSessionId).toBe(prime.id);
   expect(result.data.sessions.find((row: any) => row.id === unrelated.id).origin.fromSessionId).toBeNull();
   restoreSwarm(null); // End this fixture without user-clear retiring it into later tests.
+});
+
+it('projects invited and retained failed workers through their exact owning session', async () => {
+  const prime = await createSession({ title: 'Worker lifecycle owner', conversationId: 'lifecycle-owner' });
+  spawn({ workers: [{ task: 'open a worker chat' }], caller: { conversationId: 'lifecycle-owner' } });
+  const read = () => handlers.get('swarm:getForSession')!(null, { id: prime.id }) as Promise<any>;
+
+  expect(await read()).toMatchObject({
+    ok: true,
+    data: {
+      running: true,
+      agents: expect.arrayContaining([expect.objectContaining({ id: 'worker-1', state: 'invited' })])
+    }
+  });
+
+  failAgent('worker-1', 'worker did not report back');
+  expect(releaseQuiescentRun()).toBe(true);
+  expect(await read()).toMatchObject({
+    ok: true,
+    data: {
+      running: false,
+      retainedHistory: true,
+      agents: expect.arrayContaining([
+        expect.objectContaining({ id: 'worker-1', state: 'failed', result: 'worker did not report back' })
+      ])
+    }
+  });
+
+  const unrelated = await createSession({ title: 'Unrelated lifecycle', conversationId: 'lifecycle-unrelated' });
+  expect(await handlers.get('swarm:getForSession')!(null, { id: unrelated.id })).toMatchObject({
+    ok: true,
+    data: { running: false, retainedHistory: false, agents: [] }
+  });
+  restoreSwarm(null);
 });
 
 it('adds picker-selected projects, reuses containing approval, and leaves cancellation unchanged', async () => {
