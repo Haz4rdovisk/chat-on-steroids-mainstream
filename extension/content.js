@@ -69,6 +69,7 @@
   const OBSERVE_MS = 1000;
   /** Streaming mutations are bursty; never run a transcript-wide pass per token. */
   const TRANSCRIPT_OBSERVE_MS = 250;
+  let lastTranscriptObservationAt = 0;
   /**
    * How long the stop button must stay gone before a turn is called finished.
    *
@@ -2214,6 +2215,7 @@
     // This duplicate source document is only the native Project entry point. Its transcript
     // belongs to A's original recorder; do not adopt it while preparing the fresh composer.
     if (commandAttempt?.projectEntry && CLF_DOM.conversationId() === OPENED_CONVERSATION) return;
+    lastTranscriptObservationAt = Date.now();
     CLF_DOM.presentUserPrompts?.(message => userMessageSource(message)?.text ?? null);
     publishDesktopDecisionPartial();
     const id = CLF_DOM.conversationId();
@@ -11508,7 +11510,11 @@
   watchTranscript();
 
   every(OBSERVE_MS, () => {
-    observe();
+    // Mutation-driven observations already carry the exact same transcript/Fiber work. Keep
+    // this interval as a silence watchdog instead of repeating a full scan immediately after
+    // a live update. backgroundThrottling remains disabled in Internal Chromium, and terminal,
+    // tool-row and hidden-final edges retain their immediate event-driven paths above.
+    if (Date.now() - lastTranscriptObservationAt >= OBSERVE_MS - 50) observe();
     syncTheme();
     injectControl();
     injectStage();

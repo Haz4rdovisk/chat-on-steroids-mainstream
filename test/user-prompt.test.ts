@@ -117,11 +117,15 @@ it('hides a provider-prefixed blank paragraph using exact source, retaining stri
     expect(api.messages()[0].text).toBe(recorded);
     expect(api.userPromptText(source)).toBeNull();
     expect(userPromptText(source)).toBeNull();
-    for (const invalid of [source.replace('COS_CONTEXT:', 'COS_CONTEXT:9'), source.slice(0, 70), '  Ordinary request\n[[/COS_CONTEXT]]']) {
+    for (const invalid of [source.replace('COS_CONTEXT:', 'COS_CONTEXT:9'), source.slice(0, 70)]) {
       source = invalid;
       api.presentUserPrompts(() => source);
-      expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(false);
-      expect(page.window.document.querySelector('[data-clf-user-text]')).toBeNull();
+      expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(true);
+      expect(page.window.document.querySelector('[data-clf-user-text]')?.textContent).toBe('…');
     }
+    source = '  Ordinary request\n[[/COS_CONTEXT]]';
+    api.presentUserPrompts(() => source);
+    expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(false);
+    expect(page.window.document.querySelector('[data-clf-user-text]')).toBeNull();
   } finally { page.window.close(); }
 });

@@ -6,14 +6,16 @@
  * as a visual jump. It never delays publication, invents text, or stores a second durable copy.
  */
 
-const PAINT_INTERVAL_MS = 32;
+// Rich Markdown is rebuilt at each visible step. Twenty paints per second remains visually
+// continuous while avoiding the previous ~31 full parses per second on long final answers.
+const PAINT_INTERVAL_MS = 50;
 const BASE_CHARS_PER_SECOND = 68;
 const CATCH_UP_CHARS_PER_SECOND = 160;
 const FINAL_CHARS_PER_SECOND = 185;
 const CATCH_UP_START = 48;
 const CATCH_UP_FULL = 320;
 const MAX_ELAPSED_MS = 80;
-const MAX_CHARS_PER_PAINT = 8;
+const MAX_CHARS_PER_PAINT = 12;
 const MAX_ANIMATED_TEXT = 32 * 1024;
 const MAX_ANIMATED_DELTA = 4 * 1024;
 

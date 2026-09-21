@@ -621,7 +621,8 @@ it('hides only a verified shell prompt frame and restores a recycled user bubble
   const full = '[[COS_CONTEXT:13]]\nPrivate setup\n[[/COS_CONTEXT]]\n\nAuthored request';
   f.entry.turn.items[0].message = full; raw.textContent = full;
   f.api.presentUserPrompts();
-  expect(unit.querySelector('[data-clf-user-text]')).toBeNull(); // A layout key cannot authorize rewriting.
+  expect(unit.querySelector('[data-clf-user-text]')?.textContent).toBe('…'); // A layout key can conceal, never reconstruct.
+  expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(true);
   await f.ask();
   f.api.presentUserPrompts((message: { id: string }) => message.id === USER ? full : null);
   expect(unit.querySelector('[data-clf-user-text]')?.textContent).toBe('Authored request');

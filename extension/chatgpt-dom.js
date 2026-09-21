@@ -73,6 +73,16 @@ var CLF_DOM = (() => {
     const boundary = '\n[[/COS_CONTEXT]]\n\n';
     return value.startsWith(boundary, end) ? identity + value.slice(end + boundary.length) : null;
   }
+  // Presentation fails closed on the reserved transport header. Native Markdown can consume
+  // bytes inside the private prefix before Fiber exposes the exact message source, making its
+  // length-delimited frame temporarily unparsable. Conceal that row without treating it as a
+  // receipt; only an exact complete source may reveal the authored suffix.
+  function userPromptFrameHint(value) {
+    if (typeof value !== 'string') return false;
+    const normalized = value.replace(/\r\n?/g, '\n').trimStart();
+    const identity = promptContinuation(normalized);
+    return /^\[\[COS_CONTEXT:\d{1,6}\]\](?:\n|$)/.test(normalized.slice(identity.length));
+  }
   function presentUserPrompts(readUserText) {
     return safe(() => {
       for (const raw of document.querySelectorAll(`[data-message-author-role="user"] :is(.whitespace-pre-wrap, .markdown):not([data-clf-user-text]), ${SHELL_TURN} [data-content-search-unit-key$=":user"] [data-user-message-bubble] .whitespace-pre-wrap:not([data-clf-user-text])`)) {
@@ -80,14 +90,16 @@ var CLF_DOM = (() => {
         // exact-id source used by receipts/recording, never reconstructed HTML.
         const classic = raw.closest('[data-message-author-role="user"]');
         const holder = classic || raw.closest(SHELL_UNIT), id = messageIdOf(holder);
+        const rendered = messageText(holder, 'user');
         const source = !classic && (!id || !readUserText) ? null : readUserText ? readUserText({ role: 'user', id,
-          node: classic ? raw.closest(TURN) : holder, text: messageText(holder, 'user') }) : raw.textContent;
+          node: classic ? raw.closest(TURN) : holder, text: rendered }) : raw.textContent;
         // The native editor can prepend a blank paragraph to the exact provider
         // source. Ignore that outer whitespace only for display; the frame's
         // internal length/boundary and all receipt/recording bytes stay exact.
         const authored = typeof source === 'string' ? userPromptText(source.trimStart()) : null;
+        const privateFrame = authored !== null || userPromptFrameHint(typeof source === 'string' ? source : rendered);
         let display = raw.nextElementSibling?.matches('[data-clf-user-text]') ? raw.nextElementSibling : null;
-        if (authored === null) {
+        if (!privateFrame) {
           raw.removeAttribute('data-clf-prompt-hidden'); display?.remove(); continue;
         }
         if (!display) {
@@ -97,7 +109,13 @@ var CLF_DOM = (() => {
           display.dir = 'auto';
           raw.after(display);
         }
-        if (display.textContent !== authored) display.textContent = authored;
+        // A hint protects private bytes but cannot identify the boundary after native Markdown
+        // has changed their length. Keep a neutral placeholder until the exact source arrives.
+        const visible = authored ?? '…';
+        display.toggleAttribute('data-clf-prompt-pending', authored === null);
+        if (authored === null) display.setAttribute('aria-label', 'Request is loading');
+        else display.removeAttribute('aria-label');
+        if (display.textContent !== visible) display.textContent = visible;
         if (!raw.hasAttribute('data-clf-prompt-hidden')) raw.setAttribute('data-clf-prompt-hidden', '');
       }
     });

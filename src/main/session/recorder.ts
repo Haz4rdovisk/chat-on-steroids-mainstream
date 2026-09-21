@@ -69,6 +69,7 @@ import {
 } from './store.js';
 import {
   awaitRequestCorrelation,
+  commitRequestCorrelations,
   observeRequestCorrelations,
   requestCorrelation,
   resetCorrelationRegistryForTests,
@@ -780,7 +781,7 @@ function noteCallEvidence(
   fiberConversationId: string | null | undefined,
   calls: readonly PageCallEvidence[],
   at: number
-): void {
+): boolean {
   if (fiberConversationId && fiberConversationId !== conversationId) {
     // Name the discarded ids. Without them this line says a batch was dropped but not
     // *which* calls it cost, so a chat whose every call lands in Unattributed activity
@@ -793,7 +794,7 @@ function noteCallEvidence(
         `with Fiber conversation ${fiberConversationId}. Later agreeing evidence can still prove these calls.` +
         (dropped.length > 0 ? ` Discarded request ids: ${dropped.join(', ')}.` : '')
     );
-    return;
+    return false;
   }
   const observedAt = Math.min(at, Date.now());
   const evidencedCalls = calls.filter((call): call is PageCallEvidence & { requestId: string } => !!call.requestId);
@@ -813,6 +814,7 @@ function noteCallEvidence(
     }))
   );
   const refusals = new Set<string>();
+  let stored = false;
   for (const [index, call] of evidencedCalls.entries()) {
     const result = results[index]!;
     if (result === 'refused') {
@@ -828,10 +830,12 @@ function noteCallEvidence(
         );
       }
     } else if (result === 'stored') {
+      stored = true;
       logInfo(`request attribution: ${call.requestId} -> conversation ${conversationId}`);
       scheduleAttributionRepair(call.requestId);
     }
   }
+  return stored;
 }
 
 /**
@@ -1922,11 +1926,13 @@ export async function recordRequestEvidence(
   if (!sessionId) return null;
   // Proof identifies even a retired caller; kernel/recorder attachment checks then refuse it
   // as superseded. Never turn an exact historical owner into anonymous executable authority.
+  let storedOwner = false;
   for (const item of observations) {
     if (item.kind === 'tool_evidence' && item.calls?.length) {
-      noteCallEvidence(conversationId, sessionId, item.fiberConversationId, item.calls, item.time);
+      storedOwner = noteCallEvidence(conversationId, sessionId, item.fiberConversationId, item.calls, item.time) || storedOwner;
     }
   }
+  if (storedOwner) await commitRequestCorrelations();
   return sessionId;
 }
 

@@ -1115,6 +1115,29 @@ describe('desktop input delivery and helper ownership', () => {
     expect(user.querySelector('[data-clf-prompt-hidden]')?.textContent).toBe(prompt.replaceAll('`', ''));
   });
 
+  it('quarantines a normalized transport frame while stamped Fiber ownership is unresolved without granting receipt authority', async () => {
+    const authored = 'Keep the visible request private from transport context';
+    const prompt = prependUserPrompt(authored, 'Internal `guidance` that must never appear in the conversation UI.');
+    live = await harness(`https://chatgpt.com/c/${chatA}`);
+    const user = userTurn(live.document, 'pending-framed-user', prompt.replaceAll('`', ''), { sent: false });
+    user.setAttribute('data-clf-fiber-turn', 'pending:0');
+
+    live.hook.observe();
+    await live.hook.flush();
+
+    expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe('…');
+    expect(user.querySelector('[data-clf-user-text]')?.hasAttribute('data-clf-prompt-pending')).toBe(true);
+    expect(user.querySelector('[data-clf-prompt-hidden]')?.textContent).toBe(prompt.replaceAll('`', ''));
+    expect(emitted(live.sent, 'user_message').filter(row => row.event.messageId === 'm-pending-framed-user')).toEqual([]);
+    expect(live.sent.filter(message => message.ack)).toEqual([]);
+
+    const raw = user.querySelector('[data-clf-prompt-hidden]')!;
+    raw.textContent = 'An ordinary user message';
+    live.hook.observe();
+    expect(user.querySelector('[data-clf-user-text]')).toBeNull();
+    expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(false);
+  });
+
   it.each([false, true])('waits for composer hydration and replaces stale home text only in its owned fresh input tab (%s)', async (hasDraft) => {
     live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
       desktop_input: message => ({ ok: true, data: message.authorize ? { ok: true } : message.ack ? { ok: true } : { input: claimed() } })
