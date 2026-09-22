@@ -9,6 +9,14 @@ import type { InputArgs, InputEntry } from '../src/main/session/input.js';
 import type { LocalProject } from '../src/shared/projects.js';
 vi.mock('../src/renderer/workspace-terminal.js', () => ({ createWorkspaceTerminal: () => ({ update: vi.fn() }) }));
 vi.mock('../src/renderer/pet.js', () => ({ initPet: () => () => {} }));
+vi.mock('../src/renderer/file-code-editor.js', () => ({
+  createProjectDiffViewer: async ({ parent, baseText, currentText }: { parent: HTMLElement; baseText: string; currentText: string }) => {
+    const view = parent.ownerDocument.createElement('pre');
+    view.textContent = `${baseText}\n---\n${currentText}`;
+    parent.append(view);
+    return { destroy: () => view.remove(), language: 'TypeScript' };
+  }
+}));
 import { positionOf, projectTimeline } from '../src/shared/chronology.js';
 
 /**
@@ -1072,7 +1080,12 @@ it('keeps a newly sent message above the composer and follows its live reply unt
   const answer: Extract<SessionEvent, { kind: 'assistant_message' }> = { seq: 2, time: T0 + 2, source: 'extension',
     kind: 'assistant_message', messageId: 'follow-answer', message: text('Answer starts'), state: 'streaming', final: false };
   await app.append([answer]);
-  expect(app.w.document.querySelector('#inputQueue .assistant-thinking')).toBeNull();
+  // Session refresh is asynchronous and may finish after the helper's nominal settle delay on
+  // a loaded CI runner. Assert the product boundary, not a 500 ms scheduling assumption.
+  await expect.poll(
+    () => app.w.document.querySelector('#inputQueue .assistant-thinking'),
+    { timeout: 5_000 }
+  ).toBeNull();
   expect(scrollTop).toBe(300);
 
   scrollTop = 220;
@@ -1446,6 +1459,36 @@ it.each(['new-same-key', 'a-b-a', 'opening-adopt-new', 'same-session-send-next',
   finish(); await settle();
   expect(w.document.querySelector('#composerImages .attachment-card')).toBeNull();
   expect(w.document.querySelector('.toast')?.textContent).toContain('draft changed');
+});
+
+it('drafts a project Git review request without sending or replacing the composer draft', async () => {
+  const project: LocalProject = { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', name: 'Review', path: '/review', createdAt: T0 };
+  const { w, live } = await boot([], true, [], [project]);
+  const api = (w as any).api;
+  api.listProjectFiles = () => Promise.resolve({ ok: true, data: {
+    projectId: project.id, projectName: project.name, directory: '', entries: [], truncated: false
+  } });
+  api.getProjectGitSnapshot = () => Promise.resolve({ ok: true, data: {
+    projectId: project.id, state: 'ready', truncated: false, revision: 'dirty',
+    changes: [{ status: 'M', path: 'src/main.ts', additions: 1, deletions: 0, binary: false }]
+  } });
+  const input = w.document.getElementById('chatInput') as HTMLTextAreaElement;
+  input.value = '/grilling\nExisting draft';
+  input.dispatchEvent(new w.Event('input', { bubbles: true }));
+  (w.document.getElementById('filePanelToggle') as HTMLButtonElement).click();
+  await settle();
+  (w.document.querySelector('.file-panel-changes-toggle') as HTMLButtonElement).click();
+  await settle();
+  const ask = w.document.querySelector<HTMLButtonElement>('.file-changes-request')!;
+  expect(ask.hidden).toBe(false);
+  ask.click();
+  expect(input.value).toContain('Existing draft\n\nReview the Git changes in this project');
+  expect(w.document.querySelector('[data-skill-id="grilling"]')).not.toBeNull();
+  expect(w.document.activeElement).toBe(input);
+  expect(live.sent).toEqual([]);
+  const firstDraft = input.value;
+  ask.click();
+  expect(input.value).toBe(firstDraft);
 });
 
 it.each([false, true])('removes a project group in one click, keeps its chats and draft, and rejects an older refresh (selectedSkill=%s)', async selectedSkill => {
@@ -1854,6 +1897,38 @@ it('keeps Projects and Chats separate while preserving disclosure state through 
   projects.open = false; await app.append([]);
   expect(app.w.document.getElementById('projectsSection')).toBe(projects);
   expect(projects.open).toBe(false);
+});
+
+it('reviews only an exact recorded edit without expanding its tool row or querying Git', async () => {
+  const project: LocalProject = { id: '33333333-3333-4333-8333-333333333333', name: 'Workspace', path: '/workspace', createdAt: T0 };
+  const edit = toolCall(2, 'edit-one');
+  if (edit.kind !== 'tool_call') throw new Error('Expected a tool call');
+  edit.call.tool = 'apply_patch';
+  edit.call.summary = { kind: 'edit', title: 'Edited src/main.ts', metric: '+1 −1', tone: 'good' };
+  edit.call.changes = [{ path: '/repo/src/main.ts', added: 1, removed: 1, approximate: false, reviewAssetId: 'deadbeef.txt' }];
+  const app = await boot([edit], true, [], [project]);
+  const ok = <T>(data: T) => Promise.resolve({ ok: true as const, data });
+  const reviewCall = vi.fn(() => ok({ callId: edit.call.callId, changeIndex: 0, path: 'src/main.ts', added: 1, removed: 1,
+    baseText: 'before', currentText: 'after' }));
+  app.w.api.getToolEditReview = reviewCall;
+  const row = app.w.document.querySelector<HTMLDetailsElement>('details.tool')!;
+  const review = row.querySelector<HTMLButtonElement>('.tool-open-diff')!;
+  expect(review.getAttribute('aria-label')).toBe('Review this edit');
+  review.click(); await settle();
+  expect(row.open).toBe(false);
+  expect(reviewCall).toHaveBeenCalledWith(expect.any(String), edit.call.callId, 0);
+  expect(app.w.document.querySelector<HTMLElement>('.file-changes-view')?.hidden).toBe(false);
+  expect(app.w.document.querySelector('.file-preview-meta')?.textContent).toContain('This edit');
+});
+
+it('does not offer a project diff shortcut in an unfiled chat', async () => {
+  const edit = toolCall(2, 'edit-unfiled');
+  if (edit.kind !== 'tool_call') throw new Error('Expected a tool call');
+  edit.call.tool = 'apply_patch';
+  edit.call.summary = { kind: 'edit', title: 'Edited src/main.ts', metric: '+1 −1', tone: 'good' };
+  edit.call.changes = [{ path: '/repo/src/main.ts', added: 1, removed: 1, approximate: false, reviewAssetId: 'deadbeef.txt' }];
+  const app = await boot([edit]);
+  expect(app.w.document.querySelector('.tool-open-diff')).toBeNull();
 });
 
 it('starts in New Chat despite active history and selects only the exact acknowledged send', async () => {

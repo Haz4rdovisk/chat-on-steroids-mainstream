@@ -1168,6 +1168,7 @@ describe('activity feed', () => {
       requestId,
       evidence: {
         changes: [],
+        reviews: [],
         assets: [],
         count: null,
         detail: null,
@@ -1315,6 +1316,7 @@ describe('activity feed', () => {
       requestId,
       evidence: {
         changes: [],
+        reviews: [],
         assets: [],
         count: null,
         detail: null,
@@ -1385,6 +1387,7 @@ describe('activity feed', () => {
       conversationId,
       evidence: {
         changes: [{ path: '/project/src/main.ts', added: 18, removed: 4, approximate: false }],
+        reviews: [],
         assets: [],
         count: null,
         detail: null,
@@ -1599,7 +1602,7 @@ describe('activity feed', () => {
         tool: 'exec_command', args: { command: `fixture-${outcome}` },
         content: [{ type: 'text', text: `result-${outcome}` }], outcome, durationMs: 3,
         startedAt: Date.now(), requestId: `wfr_enum_${outcome}`, conversationId,
-        evidence: { changes: [], assets: [], count: null, detail: null,
+        evidence: { changes: [], reviews: [], assets: [], count: null, detail: null,
           exitCode: outcome === 'process_exit_nonzero' ? 4 : null, timedOut: false,
           durationMs: null, running: null, processSessionId: null }
       });

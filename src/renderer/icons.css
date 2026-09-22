@@ -58,6 +58,7 @@
 .ph.ph-folder-open::before { content: '\e256'; }
 .ph.ph-folder-plus::before { content: '\e258'; }
 .ph.ph-gear-six::before { content: '\e272'; }
+.ph.ph-git-diff::before { content: '\e27c'; }
 .ph.ph-globe-hemisphere-west::before { content: '\e28c'; }
 .ph.ph-house::before { content: '\e2c2'; }
 .ph.ph-image::before { content: '\e2ca'; }

@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'chat-on-steroids.work-panel-width';
-const DEFAULT_WIDTH = 420;
+const DEFAULT_WIDTH = 500;
 const MIN_WIDTH = DEFAULT_WIDTH;
 const MIN_MAIN_WIDTH = 360;
 

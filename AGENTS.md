@@ -223,7 +223,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Terminal custody | `src/main/codex/{manager,ownership,unified-exec,unified-exec-constants,shell,command-batch,head-tail-buffer,truncate,exec-output}.ts`. |
 | Patching/images | `src/main/codex/apply-patch/*`, `codex/{filesystem,read-backend,view-image}.ts`. |
 | Projects/cwd | `src/main/projects.ts`, `workspace.ts`, `src/shared/projects.ts`: explicit local folder catalog, session binding, inherited/learned workspaces. |
-| Project Files UI | `src/main/project-files.ts`, `project-file-watcher.ts`, `src/shared/project-files.ts`, `src/renderer/{file-panel,file-code-editor,file-pdf-viewer,work-panel-resize}.ts`: bounded project views, revision-checked saves and renderer-owned drafts. |
+| Project Files UI | `src/main/{project-files,project-file-watcher,project-git}.ts`, `src/shared/{project-files,project-git}.ts`, `src/renderer/{file-panel,file-code-editor,file-pdf-viewer,work-panel-resize}.ts`: bounded project views, read-only Git changes, revision-checked saves and renderer-owned drafts. |
 | Durable history | `src/main/session/{store,recorder,correlation,retention,summarize,progress}.ts`, `src/shared/{session,chronology}.ts`: canonical messages, tool truth, chronology and indexes. |
 | Input | `src/main/session/{input,start-input,input-history,input-attachments,input-images,prompt}.ts`, `src/shared/{input,user-prompt}.ts`: outbox, native files, prompt frame and receipts. |
 | Finish/planning | `src/main/session/finish.ts`, `task-request.ts`, `goal.ts`, `src/shared/{finish,task-progress}.ts`: held turn, decision/plan invocation and cancellation. |
@@ -2963,10 +2963,12 @@ access. Main re-resolves current approved roots and rejects traversal, symbolic 
 and project-root mutation. Files and the read-only sub-agent panel share one resizable work slot.
 The sub-agent overview starts directly with Active and History, without a heading or close X.
 Its outer toggle or Escape closes the pane; a selected worker retains its title and Back button.
-Directories load one level at a time (500 entries); at most 128 expanded directory watches are
-retained. Collapse, panel hiding, renderer reload/destruction and root removal retire watchers.
+Directories load one level at a time (500 entries); at most 128 directory watches are retained,
+prioritizing the parent folders of current Git changes before expanded tree folders. Collapse,
+panel hiding, renderer reload/destruction and root removal retire watchers.
 Files uses one action toolbar with Refresh; the outer Files toggle closes the panel. Its shared
-work slot can grow to host width minus 360 px for chat, without a fixed maximum pixel width.
+work slot has a 500 px toolbar-safe minimum and can grow to host width minus 360 px for chat,
+without a fixed maximum pixel width.
 Unchanged session/directory updates preserve preview DOM and pending code loads. File reads keep
 the previous accepted preview until replacement content is ready; hidden previews stay hidden.
 The horizontal preview separator paints a one-pixel hover line with a three-pixel drag area.
@@ -2974,6 +2976,39 @@ The tree keeps keyboard focus across refreshes and supports arrow/Home/End navig
 Enter to activate. Preview and tree share layout space rather than overlapping; the preview's
 Files toggle temporarily hides the tree for reading. Closing the preview restores it.
 Creating an entry uses the same unsaved-edit guard as changing the selected file.
+
+Changes is one toolbar mode of Files, not a second explorer. Its own header has an explicit Back
+to Files control that restores the existing tree and selection; the toolbar remains available.
+Main owns a bounded, read-only
+`HEAD -> working tree` Git snapshot and returns only project-relative paths. Porcelain status and
+numstat supply Modified/Added/Deleted/Renamed truth; `??` remains a distinct Untracked (`U`)
+status, with its total text-line count rather than a misleading `+/-` Git delta. Added (`A`)
+means added to Git but absent from HEAD. Deleted entries never become synthetic tree nodes.
+The normal Files tree shows Git status letters on changed files and every parent folder of a
+changed path, including deleted paths and both sides of a rename. A folder's accessible marker
+reports the number of affected descendants; markers disappear when the Git snapshot is clean.
+Filesystem and Git-metadata watches only invalidate the view:
+every badge, marker, count and open diff is reconciled from Git again, including after commit or
+push. The Changes list and a selected diff are mutually exclusive views of the same panel;
+the renderer window owns the bounded reconciliation debounce, and closing the panel or document
+cancels it before its preload/DOM authority can disappear.
+When the list is dirty, its Ask agent action only appends a review/check/commit/push request to
+the current project composer for user review. It never sends the draft, stages files or invokes
+Git itself, preserves existing authored text and selected Skills, and is absent from clean/diff
+and historical-review states.
+the diff fills the space below its header and opens at the first changed chunk. Back from a Git
+diff restores Changes, then Back restores Files. A historical edit review similarly fills the
+panel, and Back returns to the view from which it was opened. While Changes or an edit review is
+open, New file, New folder, Rename, Delete and Reveal are disabled. Refresh is the portable
+fallback. Git execution uses no shell, optional locks, external diff,
+textconv or fsmonitor command, and never stages, restores or mutates repository state. Binary and
+oversized diffs remain explicit unavailable states. A lazily loaded unified CodeMirror merge view
+owns syntax highlighting, intraline changes and collapsed unchanged context.
+A successful, exactly recorded apply_patch tool call may link to its own immutable before/after
+review, independent of current Git state. The recorder bounds and stores these artifacts under
+the exact session/call/change identity; a failed, approximate or oversized edit does not get a
+review link. Multiple reviewed files have previous/next navigation. The link does not expand
+the tool call or attribute current Git changes to an agent.
 
 Text previews/editor input are bounded to 256 KiB; full editable previews retain exact UTF-8,
 BOM and line endings plus a content/file-identity revision. Save stages complete replacement bytes

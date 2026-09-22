@@ -1956,6 +1956,24 @@ function toolBody(event: Extract<SessionEvent, { kind: 'tool_call' }>, context?:
   head.append(el('b', '', call.summary.title));
   if (call.summary.detail) head.append(el('em', '', call.summary.detail));
   if (summary.metric) head.append(toolMetric(summary.metric));
+  const project = context ? null : selectedLocalProject();
+  const sessionId = context ? null : selectedId;
+  const reviewIndices = call.outcome === 'ok' ? (call.changes ?? []).flatMap((change, index) =>
+    change.reviewAssetId ? [index] : []).slice(0, 8) : [];
+  if (project && sessionId && reviewIndices.length) {
+    const review = el('button', 'tool-open-diff') as HTMLButtonElement;
+    review.type = 'button'; review.append(icon('i-git-diff'));
+    ui(review, 'title', () => t('Review this edit'));
+    ui(review, 'aria-label', () => t('Review this edit'));
+    review.addEventListener('click', click => {
+      click.preventDefault(); click.stopPropagation();
+      if (selectedId !== sessionId || selectedLocalProject()?.id !== project.id) return;
+      void filePanel?.openReview(project.id, sessionId, call.callId, reviewIndices).then(opened => {
+        if (!opened) toast(t('Recorded edit is unavailable.'));
+      });
+    });
+    head.append(review);
+  }
   box.append(head);
 
   // Collapsed calls only need their headline. Large recorded results must not
@@ -4649,6 +4667,22 @@ export function initChat(next: Deps): void {
   filePanel = createFilePanel({
     host: document.querySelector<HTMLElement>('[data-panel="chat"]')!, toggle: fileToggle,
     onShow: () => agentPanel?.hide(true),
+    onRequestGitReview: projectId => {
+      if (selectedLocalProject()?.id !== projectId) return;
+      const input = $<HTMLTextAreaElement>('chatInput');
+      const request = t('Review the Git changes in this project, including untracked files. Stage only related changes and leave unrelated work untouched. Run relevant checks, commit with a clear message, then push the current branch to its configured remote without force. If scope, checks, or remote are uncertain, stop and ask me.');
+      const authored = authoredComposerText();
+      if (!authored.endsWith(request)) {
+        const separator = !authored || authored.endsWith('\n\n') ? '' : authored.endsWith('\n') ? '\n' : '\n\n';
+        const draft = `${authored}${separator}${request}`;
+        inputDrafts.set(draftKey(), draft);
+        if (skillPicker) skillPicker.restore();
+        else input.value = draft;
+        input.dispatchEvent(new input.ownerDocument.defaultView!.Event('input', { bubbles: true }));
+      }
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    },
     captureAttachment: () => {
       const owner = composerDraftOwner();
       return attachment => appendImages(owner, [attachment]);
