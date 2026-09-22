@@ -113,7 +113,25 @@ The larger off-Space/focus change remains unincorporated. Exact source revisions
 and public GitHub co-author trailers are recorded in
 [`docs/worklog-2026-09-20-selective-pr-review.md`](docs/worklog-2026-09-20-selective-pr-review.md).
 
+The September 22 follow-up incorporates [@PourrezJ](https://github.com/PourrezJ)'s French
+translation from [#369](https://github.com/totec448-spec/chat-on-steroids/pull/369). Its
+1,431 translated entries are retained with one wording correction; 21 newer strings are
+added independently. Integration preserves Turkish and the existing language controls,
+drafts and preference storage. Validation is recorded in
+[the follow-up worklog](docs/worklog-2026-09-22-french-locale.md).
+
 ## Reports, review and proposed work
+
+The September 22 selective review adapts [@lavalava45](https://github.com/lavalava45)'s
+Plugins route correction (#351) and explicit refresh retry (#363),
+[@27mfp](https://github.com/27mfp)'s project-order proposal (#355),
+[@ayhanmalkoc](https://github.com/ayhanmalkoc)'s Turkish translation (#366), and
+[@Haz4rdovisk](https://github.com/Haz4rdovisk)'s installer-close correction from #345.
+The adaptations reuse the existing outbox, refresh ledger, sidebar order and locale owners.
+Independent fixes also address the cancellation, adopted-Astra input and scrolling reports
+in #357, #361 and #359. Validation and the disposition of every reviewed issue/PR are recorded
+in [the worklog](docs/worklog-2026-09-22-github-triage.md) and
+[review ledger](docs/github-triage-2026-09-22.md).
 
 The September 20 connection and Skills integration incorporates
 [@K4viar](https://github.com/K4viar) / Lucas Pazini Pinha's approved, package-bounded Skills

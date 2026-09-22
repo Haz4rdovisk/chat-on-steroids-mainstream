@@ -29,7 +29,7 @@ export interface ViewMenuSnapshot {
   zoomPercent: number;
   theme: 'dark' | 'light';
   appearance?: AppearanceSettings;
-  language: 'en' | 'es' | 'zh-CN' | 'zh-TW' | 'ja';
+  language: 'en' | 'es' | 'zh-CN' | 'zh-TW' | 'ja' | 'tr' | 'fr';
   labels: ViewMenuLabels;
 }
 
