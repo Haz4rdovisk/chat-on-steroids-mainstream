@@ -2768,6 +2768,13 @@ evicted. Historical browsing leaves committed inputs with history. Never infer m
 the minimum event timestamp: old observations and tool start times can occur on newer pages.
 Pushes and async loads are scoped to selection/draft generation; a late load must not overwrite
 focused edits or a newer A → B → A view.
+Canonical assistant text revisions render directly; no renderer-owned queue delays text that
+the recorder already supplied. The confirmed-input thinking dots retire when real assistant
+content, tool activity or an error arrives. Copy appears only on the last canonical final
+message after that exact turn's recorded end; late tools or a reopened turn keep it hidden.
+An unowned final cannot borrow another turn's end. The composer Stop action belongs only to an
+active turn or pending input, never to presentation;
+the compact Working/Worked rail uses the recorded turn start/end for its final elapsed time.
 
 First-run Setup keeps the six-step flow, with reviewed screenshots in `renderer/setup-images/`
 and translated numbered highlights in `renderer/setup-guide.ts`. Sensitive identifiers must
@@ -3414,12 +3421,11 @@ shared-tree change may already have addressed them.
   Large migrations can contend with first-turn work. Move rebuild off the startup hot path or
   maintain the required facts incrementally at the recorder owner; do not add a second polling
   cache. See `docs/worklog-2026-09-21-performance-follow-up-inventory.md`.
-- **Live-response presentation cost:** alternate-shell evidence scans are bounded for safety, and
-  assistant reveal is presentation-only, but neither path has a production performance budget.
-  Mutation-driven Fiber scans can repeat during generation, while fake streaming reparses and
-  replaces the accumulated Markdown. Measure exact scan/revision/paint cost before changing
-  evidence or recording semantics. Internal Chromium's always-live parked views can multiply this
-  shared work and require a separate liveness-preserving composition design.
+- **Live-response presentation cost:** alternate-shell evidence scans are bounded for safety,
+  but mutation-driven Fiber scans and Markdown repaint on canonical assistant revisions lack a
+  production performance budget. Measure exact scan/revision/paint cost before changing evidence
+  or recording semantics. Internal Chromium's always-live parked views can multiply this shared
+  work and require a separate liveness-preserving composition design.
 
 Do not restore obsolete claims while investigating: two MCP surfaces, one global prime run,
 three browser command kinds, fixed 60s Unattributed repair, tab-query

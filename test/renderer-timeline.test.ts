@@ -1101,36 +1101,22 @@ it('keeps a newly sent message above the composer and follows its live reply unt
   expect(scrollTop).toBe(300);
 });
 
-it('shows confirmed thinking for one paint when the receipt and first response arrive together', async () => {
+it('shows the real response immediately when its confirmation arrives in the same snapshot', async () => {
   const app = await boot([]);
   const input = app.w.document.getElementById('chatInput') as HTMLTextAreaElement;
   input.value = 'Confirm and answer together';
   app.w.document.getElementById('composer')!.dispatchEvent(new app.w.Event('submit', { bubbles: true, cancelable: true }));
   await settle();
   const inputId = app.live.sent[0]!.id;
-  const frames: FrameRequestCallback[] = [];
-  Object.defineProperty(app.w, 'requestAnimationFrame', { configurable: true, value: (callback: FrameRequestCallback) => {
-    frames.push(callback); return frames.length;
-  } });
   app.live.events.push(
     { seq: 1, time: T0 + 1, source: 'extension', kind: 'user_message', inputId, inputDelivery: 'confirmed', messageId: `input:${inputId}`, message: text('Confirm and answer together') },
     { seq: 2, time: T0 + 2, source: 'extension', kind: 'assistant_message', messageId: 'same-batch-answer', message: text('Answer starts'), state: 'streaming', final: false }
   );
   app.notifySession();
   await settle(450);
-  const receipt = app.w.document.querySelector<HTMLElement>('.input-receipt:not([hidden])')!;
-  const thinking = app.w.document.querySelector<HTMLElement>('#inputQueue .assistant-thinking')!;
+  const receipt = app.w.document.querySelector<HTMLElement>('.input-receipt')!;
   expect(receipt).not.toBeNull();
-  expect(thinking.classList.contains('is-reserved')).toBe(false);
-  expect(thinking.getAttribute('role')).toBe('status');
-  expect(app.w.document.querySelector('.assistant-message-content')!.textContent).toBe('');
-  let now = app.w.performance.now();
-  for (let index = 0; index < 4 && !app.w.document.querySelector('.assistant-message-content')!.textContent; index++) {
-    const frame = frames.shift();
-    expect(frame).toBeDefined();
-    frame!(now += 40);
-  }
-  expect(app.w.document.querySelector('.assistant-message-content')!.textContent).not.toBe('');
+  expect(app.w.document.querySelector('.assistant-message-content')!.textContent?.trimEnd()).toBe('Answer starts');
   expect(app.w.document.querySelector('#inputQueue .assistant-thinking')).toBeNull();
   expect(receipt.hidden).toBe(true);
 });
@@ -2271,33 +2257,25 @@ it('keeps a streaming message anchor and its following tool group across canonic
   expect(group.open).toBe(true);
 });
 
-it('reveals a live assistant revision continuously and offers copy only on its final turn message', async () => {
-  const message: Extract<SessionEvent, { kind: 'assistant_message' }> = { seq: 1, origin: 1, time: T0, source: 'extension',
-    kind: 'assistant_message', messageId: 'smooth-message', message: text('Start'), state: 'streaming', final: false };
-  const app = await boot([message]);
+it('renders each canonical assistant revision directly and offers copy only after its turn ends', async () => {
+  const turnId = 'copy-turn';
+  const message: Extract<SessionEvent, { kind: 'assistant_message' }> = { seq: 2, origin: 2, time: T0 + 1000, source: 'extension',
+    kind: 'assistant_message', turnId, messageId: 'smooth-message', message: text('Start'), state: 'streaming', final: false };
+  const app = await boot([{ seq: 1, time: T0, source: 'extension', kind: 'turn_start', turnId }, message]);
   const target = `Start ${'flow'.repeat(40)}`;
-  app.live.events.push({ ...message, seq: 2, message: text(target) });
-  app.notifySession();
+  await app.append([{ ...message, seq: 3, message: text(target) }]);
   const content = () => app.w.document.querySelector<HTMLElement>('.ev-assistant_message .assistant-message-content')!.textContent?.trimEnd() ?? '';
-  await vi.waitFor(() => expect(content().length).toBeGreaterThan('Start'.length), { timeout: 1500, interval: 40 });
-  expect(content().length).toBeLessThan(target.length);
-  const beforeExtension = content().length;
+  expect(content()).toBe(target);
   const extendedTarget = `${target} ${'more'.repeat(20)}`;
-  app.live.events.push({ ...message, seq: 3, message: text(extendedTarget) });
-  app.notifySession();
-  await settle(240);
-  expect(content().length).toBeGreaterThan(beforeExtension);
-  expect(content().length).toBeLessThan(extendedTarget.length);
-  await vi.waitFor(() => expect(content()).toBe(extendedTarget), { timeout: 5000, interval: 40 });
+  await app.append([{ ...message, seq: 4, message: text(extendedTarget) }]);
+  expect(content()).toBe(extendedTarget);
   const actions = app.w.document.querySelector<HTMLElement>('.assistant-message-actions')!;
   expect(actions.hidden).toBe(true);
   const finalTarget = `${extendedTarget} ${'done'.repeat(12)}`;
-  app.live.events.push({ ...message, seq: 4, message: text(finalTarget), state: 'final', final: true });
-  app.notifySession();
-  await settle(120);
-  expect(content()).not.toBe(finalTarget);
+  await app.append([{ ...message, seq: 5, message: text(finalTarget), state: 'final', final: true }]);
+  expect(content()).toBe(finalTarget);
   expect(actions.hidden).toBe(true);
-  await vi.waitFor(() => expect(content()).toBe(finalTarget), { timeout: 2000, interval: 40 });
+  await app.append([{ seq: 6, time: T0 + 6000, source: 'extension', kind: 'turn_end', turnId, outcome: 'completed' }]);
   expect(actions.hidden).toBe(false);
   const copy = app.w.document.querySelector<HTMLButtonElement>('.assistant-copy')!;
   expect(copy.querySelector('.ph-copy')).not.toBeNull();
@@ -2306,7 +2284,89 @@ it('reveals a live assistant revision continuously and offers copy only on its f
   expect(app.live.copied).toEqual([finalTarget]);
 });
 
-it('keeps the Stop shape through local reveal without cancelling a completed backend turn', async () => {
+it('keeps Copy after the last final of a turn, not among later tools or earlier final messages', async () => {
+  const turnId = 'late-tools-copy';
+  const first: Extract<SessionEvent, { kind: 'assistant_message' }> = { seq: 2, time: T0 + 1000,
+    source: 'extension', kind: 'assistant_message', turnId, messageId: 'first-final', message: text('First final'), state: 'final', final: true };
+  const app = await boot([{ seq: 1, time: T0, source: 'extension', kind: 'turn_start', turnId }, first]);
+  const actions = () => [...app.w.document.querySelectorAll<HTMLElement>('.assistant-message-actions')];
+  expect(actions().map(row => row.hidden)).toEqual([true]);
+  await app.append([{ ...toolCall(3, 'late-copy-tool'), turnId }, { seq: 4, time: T0 + 4000,
+    source: 'extension', kind: 'assistant_message', turnId, messageId: 'last-final', message: text('Actual final'), state: 'final', final: true }]);
+  expect(actions().map(row => row.hidden)).toEqual([true, true]);
+  await app.append([{ seq: 5, time: T0 + 5000, source: 'extension', kind: 'turn_end', turnId, outcome: 'completed' }]);
+  expect(actions().map(row => row.hidden)).toEqual([true, false]);
+  actions()[1]!.querySelector<HTMLButtonElement>('.assistant-copy')!.click();
+  await settle();
+  expect(app.live.copied).toEqual(['Actual final']);
+});
+
+it('hides Copy while the same turn is reopened and restores it only at the new end', async () => {
+  const turnId = 'reopened-copy';
+  const message: Extract<SessionEvent, { kind: 'assistant_message' }> = { seq: 2, origin: 2,
+    time: T0 + 1000, source: 'extension', kind: 'assistant_message', turnId, messageId: 'reopened-final',
+    message: text('First final'), state: 'final', final: true };
+  const app = await boot([{ seq: 1, time: T0, source: 'extension', kind: 'turn_start', turnId }, message,
+    { seq: 3, time: T0 + 3000, source: 'extension', kind: 'turn_end', turnId, outcome: 'completed' }]);
+  const actions = app.w.document.querySelector<HTMLElement>('.assistant-message-actions')!;
+  expect(actions.hidden).toBe(false);
+  await app.append([{ seq: 4, time: T0 + 4000, source: 'app', kind: 'turn_start', turnId, detail: 'Late tools reopened this turn' }]);
+  expect(actions.hidden).toBe(true);
+  await app.append([{ ...message, seq: 5, message: text('Revised final') }]);
+  expect(actions.hidden).toBe(true);
+  await app.append([{ seq: 6, time: T0 + 6000, source: 'extension', kind: 'turn_end', turnId, outcome: 'completed' }]);
+  expect(actions.hidden).toBe(false);
+  actions.querySelector<HTMLButtonElement>('.assistant-copy')!.click();
+  await settle();
+  expect(app.live.copied).toEqual(['Revised final']);
+});
+
+it('does not infer a finished turn for an unowned legacy final', async () => {
+  const app = await boot([{ seq: 1, time: T0, source: 'extension', kind: 'assistant_message',
+    messageId: 'unowned-final', message: text('Unowned final'), state: 'final', final: true }]);
+  expect(app.w.document.querySelector<HTMLElement>('.assistant-message-actions')!.hidden).toBe(true);
+});
+
+it('accepts a projected turn origin when the final message lost its document-local turn id', async () => {
+  const app = await boot([
+    { seq: 1, time: T0, source: 'extension', kind: 'turn_start', turnId: 'projected-turn', turnOrigin: 1 },
+    { seq: 2, time: T0 + 1000, source: 'extension', kind: 'assistant_message', turnOrigin: 1,
+      messageId: 'projected-final', message: text('Projected final'), state: 'final', final: true },
+    { seq: 3, time: T0 + 2000, source: 'extension', kind: 'turn_end', turnId: 'projected-turn', turnOrigin: 1, outcome: 'completed' }
+  ]);
+  expect(app.w.document.querySelector<HTMLElement>('.assistant-message-actions')!.hidden).toBe(false);
+});
+
+it('keeps Copy hidden while exact session controls still own a reopened turn', async () => {
+  const turnId = 'controlled-copy';
+  const app = await boot([
+    { seq: 1, time: T0, source: 'extension', kind: 'turn_start', turnId },
+    { seq: 2, time: T0 + 1000, source: 'extension', kind: 'assistant_message', turnId,
+      messageId: 'controlled-final', message: text('Controlled final'), state: 'final', final: true },
+    { seq: 3, time: T0 + 2000, source: 'extension', kind: 'turn_end', turnId, outcome: 'completed' }
+  ]);
+  const actions = app.w.document.querySelector<HTMLElement>('.assistant-message-actions')!;
+  expect(actions.hidden).toBe(false);
+  const api = (app.w as any).api;
+  api.getSessionControls = async () => ({ ok: true, data: {
+    sessionId: '2026-09-02-test0001', automation: 'off', activeTurnId: turnId,
+    finishHeld: false, blocked: '', job: null
+  } });
+  const chat = await import('../src/renderer/chat.js');
+  const state = await api.getState();
+  chat.chatApply(state.data);
+  await settle();
+  expect(actions.hidden).toBe(true);
+  api.getSessionControls = async () => ({ ok: true, data: {
+    sessionId: '2026-09-02-test0001', automation: 'off', activeTurnId: null,
+    finishHeld: false, blocked: '', job: null
+  } });
+  chat.chatApply(state.data);
+  await settle();
+  expect(actions.hidden).toBe(false);
+});
+
+it('returns Stop to Send only when the real turn ends, without a presentation-only action', async () => {
   const app = await boot([{ seq: 1, time: T0, source: 'extension', kind: 'turn_start', turnId: 'visual-turn' }]);
   const api = (app.w as any).api;
   const stop = vi.fn(async () => ({ ok: true, data: {} }));
@@ -2321,15 +2381,10 @@ it('keeps the Stop shape through local reveal without cancelling a completed bac
     { seq: 3, time: T0 + 13_000, source: 'extension', kind: 'turn_end', turnId: 'visual-turn', outcome: 'completed' }
   ]);
   const send = app.w.document.getElementById('chatSend') as HTMLButtonElement;
-  expect(send.dataset.action).toBe('finish-presentation');
-  expect(send.getAttribute('aria-label')).toBe('Show full response');
-  expect(send.querySelector('.send-icon')?.classList.contains('ph-stop')).toBe(true);
-  expect(app.w.document.querySelector('.assistant-message-content')!.textContent).not.toBe(finalText);
-  send.click();
-  await settle();
+  expect(send.dataset.action).toBe('send');
+  expect(send.querySelector('.send-icon')?.classList.contains('ph-stop')).toBe(false);
   expect(stop).not.toHaveBeenCalled();
   expect(app.w.document.querySelector('.assistant-message-content')!.textContent?.trimEnd()).toBe(finalText);
-  expect(send.dataset.action).toBe('send');
   expect(send.querySelector('.send-icon')?.classList.contains('ph-arrow-up')).toBe(true);
 });
 
@@ -2605,18 +2660,17 @@ it('shows elapsed work for the exact recorded turn without exposing lifecycle ro
   expect(w.document.querySelector('#turnStatusIcon .turn-status-snake')!.hasAttribute('hidden')).toBe(false);
   expect(w.document.querySelector('#turnStatusIcon .turn-status-check')!.hasAttribute('hidden')).toBe(true);
   (w as any).api.getSessionControls = (id: string) => Promise.resolve({ ok: true, data: { sessionId: id, automation: 'off', activeTurnId: null, finishHeld: false, blocked: '', job: null } });
-  const finalText = `Final answer ${'keeps revealing smoothly. '.repeat(16)}`.trimEnd();
+  const finalText = `Final answer ${'is already recorded. '.repeat(16)}`.trimEnd();
   const now = vi.spyOn(Date, 'now').mockReturnValue(T0 + 66_000);
   await append([
     { seq: 2, time: T0 + 64_000, source: 'extension', kind: 'assistant_message', messageId: 'held-answer', turnId: 'held-turn', message: text(finalText), state: 'final', final: true },
     { seq: 3, time: T0 + 65_000, source: 'extension', kind: 'turn_end', turnId: 'held-turn', outcome: 'completed' }
   ]);
-  expect(w.document.getElementById('chatState')!.textContent).toMatch(/ for 1m 6s$/);
-  expect(rail.classList).toContain('is-working');
+  expect(w.document.querySelector('.assistant-message-content')!.textContent?.trimEnd()).toBe(finalText);
+  expect(w.document.getElementById('chatState')!.textContent).toBe('Worked for 1m 5s');
+  expect(rail.classList).toContain('is-complete');
   now.mockReturnValue(T0 + 68_000);
   await append([]);
-  expect(w.document.getElementById('chatState')!.textContent).toMatch(/ for 1m 8s$/);
-  await vi.waitFor(() => expect(w.document.querySelector('.assistant-message-content')!.textContent?.trimEnd()).toBe(finalText), { timeout: 5000, interval: 40 });
   expect(w.document.getElementById('chatState')!.textContent).toBe('Worked for 1m 5s');
   expect(rail.classList).toContain('is-complete');
   expect(w.document.querySelector('#turnStatusIcon .turn-status-check')!.classList).toContain('ph-check');

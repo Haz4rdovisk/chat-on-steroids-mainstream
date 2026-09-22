@@ -22,7 +22,6 @@ import type { RecoveryCountdown } from '../shared/recovery.js';
 import { communicationTitle, foldAgentCommunication } from './agent-communication.js';
 import { initContextMeter, paintContextMeter } from './context-meter.js';
 import { installComposerHeightMotion } from './composer-motion.js';
-import { createTextReveal, type TextReveal } from './text-reveal.js';
 import { isAstraModel } from '../shared/chat-models.js';
 import { supportsFinishAutomation } from '../shared/finish.js';
 import type { InputImage, InputAttachment, InputAutomation } from '../shared/input.js';
@@ -966,10 +965,7 @@ function paintDeliveryControls(): void {
   if (canInject && explicitInjection && $<HTMLSelectElement>('sendMode').value === 'auto') $<HTMLSelectElement>('sendMode').value = 'tool';
   if (!canInject && !canSendDirectly && !queueAtFinish) $<HTMLSelectElement>('sendMode').value = 'auto';
   const pending = pendingComposerInput();
-  const presenting = assistantPresentation();
-  const presentationOnly = !working && !pending && !!presenting && !currentPreparedPlan() &&
-    !authoredComposerText().trim() && !(imageDrafts.get(draftKey())?.length);
-  const stop = (working || !!pending || presentationOnly) && !currentPreparedPlan() &&
+  const stop = (working || !!pending) && !currentPreparedPlan() &&
     !authoredComposerText().trim() && !(imageDrafts.get(draftKey())?.length);
   // Hover selects delivery for the next message. Clicking the empty-composer
   // Stop still acts immediately; there is no second Stop action in the menu.
@@ -981,14 +977,14 @@ function paintDeliveryControls(): void {
   send.disabled = !stop && (preparedPlan
     ? !compactMode && (preparedPlan.sending || preparedPlan.stages.some(stage => !stage.trim()))
     : !hasDraft);
-  send.dataset.action = presentationOnly ? 'finish-presentation' : stop ? 'stop' : 'send';
-  ui(send, 'aria-label', () => presentationOnly ? t("Show full response") : stop ? (controlledStopPending ? t("Stop requested") : t("Stop turn")) : compactMode ? t("Compact & resume") : t("Send message"));
+  send.dataset.action = stop ? 'stop' : 'send';
+  ui(send, 'aria-label', () => stop ? (controlledStopPending ? t("Stop requested") : t("Stop turn")) : compactMode ? t("Compact & resume") : t("Send message"));
   if (stop && !working && pending) ui(send, 'aria-label', () => t("Cancel delivery"));
   const planAction = selectedId ? t("Queue plan at Session finish") : t("Start full plan");
   if (preparedPlan && !stop) send.setAttribute('aria-label', planAction);
   else if (planMode && !stop) ui(send, 'aria-label', () => t("Generate plan"));
   send.classList.toggle('is-plan-ready', !!preparedPlan && !compactMode && !stop);
-  ui(send, 'title', () => presentationOnly ? t("Show full response") : stop && !working && pending ? t("Cancel delivery") : compactMode && !stop ? t("Compact & resume") : preparedPlan && !stop ? planAction : planMode && !stop ? t("Click to generate plan") : '');
+  ui(send, 'title', () => stop && !working && pending ? t("Cancel delivery") : compactMode && !stop ? t("Compact & resume") : preparedPlan && !stop ? planAction : planMode && !stop ? t("Click to generate plan") : '');
   send.classList.toggle('is-stop', stop);
   const sendIcon = send.querySelector<HTMLElement>('.send-icon')!;
   sendIcon.classList.toggle('ph', !stop);
@@ -1291,6 +1287,7 @@ async function refreshSessionControls(): Promise<void> {
   controlledSessionId = id;
   controlledSelection = selectionGeneration;
   controlledTurnId = controls?.activeTurnId ?? null;
+  repaintAssistantCopies();
   goalDraftView = controls?.goalDraft ?? null;
   goalWaitView = controls?.goalWait ?? null;
   finishGoalDraftView = controls?.finishGoalDraft ?? null;
@@ -1793,96 +1790,103 @@ export function renderedMessage(html: StoredText | null | undefined, fallback: s
 }
 
 interface AssistantProjection {
-  animate: boolean;
-  capture?: StoredText;
   content: HTMLElement;
-  final: boolean;
-  reveal: TextReveal;
+  source: string;
 }
 
 const assistantProjections = new WeakMap<HTMLElement, AssistantProjection>();
 
-function assistantPresentation(): AssistantProjection | null {
-  const boxes = $('timeline').querySelectorAll<HTMLElement>('.assistant-response.is-revealing');
-  const box = boxes.item(boxes.length - 1);
-  return box ? assistantProjections.get(box) ?? null : null;
+function sameRecordedTurn(left: SessionEvent, right: SessionEvent): boolean {
+  if (typeof left.turnOrigin === 'number' && typeof right.turnOrigin === 'number')
+    return left.turnOrigin === right.turnOrigin;
+  return !!left.turnId && left.turnId === right.turnId;
 }
 
-/** A completed backend turn has no Stop authority. This only reveals bytes already recorded. */
-function finishAssistantPresentation(): boolean {
-  if ($<HTMLButtonElement>('chatSend').dataset.action !== 'finish-presentation') return false;
-  const working = selectedId !== null && controlledSessionId === selectedId &&
-    controlledSelection === selectionGeneration && controlledTurnId !== null;
-  if (working || pendingComposerInput() || currentPreparedPlan() || authoredComposerText().trim() ||
-      imageDrafts.get(draftKey())?.length) return false;
-  const presentation = assistantPresentation();
-  if (!presentation) return false;
-  presentation.reveal.finish();
-  return true;
+/** A final message can precede late tools or a reopened turn; only its recorded end releases Copy. */
+function assistantCopyReady(message: Extract<SessionEvent, { kind: 'assistant_message' }>, history: readonly SessionEvent[], sessionId: string | null): boolean {
+  if (!message.final || (!message.turnId && typeof message.turnOrigin !== 'number')) return false;
+  let boundary: SessionEvent | undefined;
+  let final: SessionEvent | undefined;
+  for (const event of history) {
+    if (!sameRecordedTurn(message, event)) continue;
+    if (event.kind === 'turn_start' || event.kind === 'turn_end') {
+      if (!boundary || event.seq > boundary.seq) boundary = event;
+    } else if (event.kind === 'assistant_message' && event.final &&
+      (!final || positionOf(event) > positionOf(final) ||
+        (positionOf(event) === positionOf(final) && event.seq > final.seq))) final = event;
+  }
+  if (boundary?.kind !== 'turn_end' || final !== message) return false;
+  return !(sessionId === controlledSessionId && controlledSelection === selectionGeneration &&
+    controlledTurnId && message.turnId === controlledTurnId);
 }
 
-function paintAssistantContent(box: HTMLElement, state: AssistantProjection, visible: string, settled: boolean): void {
+function paintAssistantCopy(box: HTMLElement, message: Extract<SessionEvent, { kind: 'assistant_message' }>, history: readonly SessionEvent[], sessionId: string | null): void {
+  const actions = box.querySelector<HTMLElement>(':scope > .assistant-message-actions');
+  if (actions) actions.hidden = !assistantCopyReady(message, history, sessionId);
+}
+
+/** A control-only update may close or reopen a turn without changing any timeline row signature. */
+function repaintAssistantCopies(): void {
+  if (detailFor !== selectedId) return;
+  for (const event of events) {
+    if (event.kind !== 'assistant_message') continue;
+    const row = rowCache.get(itemKey({ kind: 'event', event }))?.row;
+    const box = row?.querySelector<HTMLElement>('.assistant-response');
+    if (box?.isConnected) paintAssistantCopy(box, event, events, selectedId);
+  }
+}
+
+function paintAssistantContent(box: HTMLElement, state: AssistantProjection, source: string, capture?: StoredText): void {
   const pane = box.isConnected && timelineOwnsSharedScroll() ? $('chatBody') : null;
   const paneTop = pane?.getBoundingClientRect().top ?? 0;
   const before = pane ? box.getBoundingClientRect() : null;
-  const content = renderedMarkdown(visible, settled ? state.capture : undefined);
+  const content = renderedMarkdown(source, capture);
   content.classList.add('assistant-message-content');
   state.content.replaceWith(content);
   state.content = content;
-  const wasRevealing = box.classList.contains('is-revealing');
-  box.classList.toggle('is-revealing', !settled);
-  const actions = box.querySelector<HTMLElement>(':scope > .assistant-message-actions');
-  if (actions) actions.hidden = !(state.final && settled);
-  if (state.animate && visible.trim()) clearPresentedThinkingFeedback();
-  if (pane && timelineFollowBottom) pane.scrollTop = pane.scrollHeight;
-  else if (pane && before && before.bottom <= paneTop) pane.scrollTop += box.getBoundingClientRect().height - before.height;
-  if (settled && state.final) paintStateLine();
-  if (wasRevealing && settled && box.isConnected) paintDeliveryControls();
+  if (pane && before && before.bottom <= paneTop) pane.scrollTop += box.getBoundingClientRect().height - before.height;
 }
 
 function updateAssistantBox(
   box: HTMLElement,
   event: Extract<SessionEvent, { kind: 'assistant_message' }>,
-  animate: boolean
+  animate: boolean,
+  history: readonly SessionEvent[],
+  sessionId: string | null
 ): void {
   const source = withoutMessageReaction(event.message.text).slice(0, MAX_RENDERED_HTML_CHARS);
   let state = assistantProjections.get(box);
   if (!state) {
-    const content = renderedMarkdown('');
+    const content = renderedMarkdown(source, event.renderedHtml);
     content.classList.add('assistant-message-content');
-    state = { animate, content, capture: event.renderedHtml, final: event.final === true } as AssistantProjection;
-    state.reveal = createTextReveal((visible, settled) => paintAssistantContent(box, state!, visible, settled));
+    state = { content, source };
     assistantProjections.set(box, state);
     box.append(content);
+  } else {
+    state.source = source;
+    paintAssistantContent(box, state, source, event.renderedHtml);
   }
-  state.animate = animate;
-  state.capture = event.renderedHtml;
-  state.final = event.final === true;
-  box.classList.toggle('is-streaming', !state.final);
+  if (animate && source.trim()) clearPresentedThinkingFeedback();
+  const final = event.final === true;
+  box.classList.toggle('is-streaming', !final);
   const label = box.querySelector<HTMLElement>(':scope > b');
-  if (label) ui(label, 'textContent', () => state!.final ? 'ChatGPT' : t("ChatGPT (partial)"));
-  state.reveal.update(source, { animate, final: state.final });
-  const revealing = !state.reveal.settled();
-  const revealStarted = revealing && !box.classList.contains('is-revealing');
-  box.classList.toggle('is-revealing', revealing);
-  if (revealStarted && box.isConnected) paintDeliveryControls();
-  const actions = box.querySelector<HTMLElement>(':scope > .assistant-message-actions');
-  if (actions) actions.hidden = !(state.final && state.reveal.settled());
+  if (label) ui(label, 'textContent', () => final ? 'ChatGPT' : t("ChatGPT (partial)"));
+  paintAssistantCopy(box, event, history, sessionId);
 }
 
-function assistantBox(event: Extract<SessionEvent, { kind: 'assistant_message' }>, animate: boolean): HTMLElement {
-  const box = el('div', 'said assistant-response');
+function assistantBox(event: Extract<SessionEvent, { kind: 'assistant_message' }>, animate: boolean, history: readonly SessionEvent[], sessionId: string | null): HTMLElement {
+  const box = el('div', `said assistant-response${animate ? ' is-entering' : ''}`);
   box.append(el('b'));
-  updateAssistantBox(box, event, animate);
+  updateAssistantBox(box, event, animate, history, sessionId);
   const actions = el('div', 'assistant-message-actions');
-  actions.hidden = !(event.final === true && assistantProjections.get(box)?.reveal.settled());
+  actions.hidden = !assistantCopyReady(event, history, sessionId);
   const copy = el('button', 'assistant-copy') as HTMLButtonElement;
   copy.type = 'button';
   ui(copy, 'aria-label', () => t('Copy'));
   ui(copy, 'title', () => t('Copy'));
   copy.append(icon('i-copy'));
   copy.addEventListener('click', async () => {
-    const value = assistantProjections.get(box)?.reveal.value() ?? '';
+    const value = assistantProjections.get(box)?.source ?? '';
     if (!value || !await run(api.writeClipboard(value))) return;
     toast(t('Copied'));
   });
@@ -1898,7 +1902,7 @@ function patchAssistantRow(
 ): boolean {
   const box = row.querySelector<HTMLElement>('.assistant-response');
   if (!box) return false;
-  updateAssistantBox(box, event, animate);
+  updateAssistantBox(box, event, animate, events, selectedId);
   row.hidden = !withoutMessageReaction(event.message.text).trim();
   const time = row.querySelector('time');
   if (time) {
@@ -2239,7 +2243,7 @@ function eventBody(event: SessionEvent, context?: { id: string; current: () => b
       return box;
     }
     case 'assistant_message': {
-      return assistantBox(event, animateAssistant);
+      return assistantBox(event, animateAssistant, context?.history ?? events, context?.id ?? selectedId);
     }
     case 'native_image': {
       const box = el('div', 'said native-image');
@@ -2930,6 +2934,7 @@ function paintDetail(followBottom = historyBefore === null, animateAssistant = f
     : () => {};
   const timelineRows: HTMLElement[] = [];
   const keep = new Set<string>();
+  let patchedAssistantContent = false;
   let activityBoundary = '';
   paintRecoveryStatus();
   const oldest = shown.length ? Math.min(...shown.map(event => event.time)) : 0;
@@ -2974,6 +2979,10 @@ function paintDetail(followBottom = historyBefore === null, animateAssistant = f
       if (item.kind === 'event' && item.event.kind === 'user_message') {
         paintMessageReaction(cached.row.querySelector<HTMLElement>('.said.is-user')!, item.event.reaction);
       }
+      if (item.kind === 'event' && item.event.kind === 'assistant_message') {
+        const box = cached.row.querySelector<HTMLElement>('.assistant-response');
+        if (box) paintAssistantCopy(box, item.event, events, selectedId);
+      }
       paintInputReceipt(cached.row, item);
       timelineRows.push(cached.row);
       continue;
@@ -2981,6 +2990,7 @@ function paintDetail(followBottom = historyBefore === null, animateAssistant = f
     const patchedAssistant = item.kind === 'event' && item.event.kind === 'assistant_message' && cached
       ? patchAssistantRow(cached.row, item.event, animateAssistant)
       : false;
+    if (patchedAssistant) patchedAssistantContent = true;
     const row = patchedAssistant ? cached!.row
       : item.kind === 'compaction' ? compactionRow(item.block, cached?.row) : eventRow(item.event, animateAssistant);
     row.dataset.timelineKey = key;
@@ -2997,6 +3007,12 @@ function paintDetail(followBottom = historyBefore === null, animateAssistant = f
   paintDeliveryControls();
   paintStateLine();
   restoreViewport();
+  // Direct canonical revisions now render inside this paint. Restore the elected live tail
+  // after viewport reconciliation, which otherwise rewinds the just-grown answer.
+  if (patchedAssistantContent && timelineFollowBottom && timelineOwnsSharedScroll()) {
+    $('timelineContent').style.removeProperty('--timeline-scroll-reserve');
+    pane.scrollTop = pane.scrollHeight;
+  }
 
   const facts: string[] = [];
   if (summary) {
@@ -3171,8 +3187,7 @@ function stateLine(): { text: string; tone: '' | 'is-live' | 'is-bad'; phase?: '
     const endedAt = events.find(event => event.kind === 'turn_end' && event.turnId === turnId)?.time;
     if (startedAt === undefined) return { text: active ? `${t(turnWorkWord(turnId, 0))}…` : '', tone: '', phase: active ? 'working' : undefined };
     if (!active && endedAt === undefined) return { text: '', tone: '' };
-    const presenting = !active && !!assistantPresentation();
-    const working = !!active || presenting;
+    const working = !!active;
     const seconds = Math.max(0, Math.floor(((working ? Date.now() : endedAt!) - startedAt) / 1000));
     const action = working ? t(turnWorkWord(turnId, seconds)) : t("Worked");
     return { text: t("{0} for {1}{2}s", [action, seconds >= 60 ? `${t('{0}m', [Math.floor(seconds / 60)])} ` : '', seconds % 60]), tone: '', phase: working ? 'working' : 'complete', ticking: working };
@@ -3893,7 +3908,7 @@ function thinkingFeedbackRow(feedback: ThinkingFeedback, existing?: HTMLElement 
   return row;
 }
 
-/** The first response glyph, not its earlier canonical snapshot, retires visual waiting. */
+/** A real assistant revision retires visual waiting; no local reveal delays it. */
 function clearPresentedThinkingFeedback(): void {
   const feedback = currentThinkingFeedback();
   if (!feedback?.confirmed) return;
@@ -4813,7 +4828,6 @@ export function initChat(next: Deps): void {
   $('createPlan').addEventListener('click', () => { if (taskPlans.has(draftKey())) cancelTaskPlan(); else void createTaskPlan(deps.state()?.config.ui.planBackend ?? 'chatgpt'); });
   $('composer').addEventListener('submit', (event) => {
     event.preventDefault();
-    if (finishAssistantPresentation()) return;
     const controlAction = event.submitter === $('chatSend') && $('chatSend').dataset.action === 'stop';
     if (skillPicker?.hasCommand('compact')) void sendComposer(undefined, undefined, undefined, controlAction);
     else if (currentPreparedPlan()) void sendPreparedPlan();
