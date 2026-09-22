@@ -11,7 +11,13 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); dom.window.close(); });
 
-it('preserves every numbered argument in the Turkish catalog', () => {
+it('covers every current catalog key and preserves numbered arguments in Turkish', () => {
+  const keys = new Set(
+    ['es', 'zh-CN', 'zh-TW', 'ja', 'fr'].flatMap((locale) =>
+      Object.keys(JSON.parse(readFileSync(`src/renderer/locales/${locale}.json`, 'utf8'))),
+    ),
+  );
+  expect([...keys].filter((source) => !Object.hasOwn(tr, source))).toEqual([]);
   const args = (value: string) => (value.match(/\{\d+\}/g) ?? []).sort();
   for (const [source, value] of Object.entries(tr)) {
     expect(value.trim(), source).not.toBe('');

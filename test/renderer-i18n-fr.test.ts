@@ -12,8 +12,14 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); dom.window.close(); });
 
-it('keeps French and Turkish catalog keys aligned and preserves numbered arguments', () => {
-  expect(Object.keys(fr)).toEqual(Object.keys(tr));
+it('covers every current catalog key and preserves numbered arguments in French', () => {
+  const keys = new Set([
+    ...Object.keys(tr),
+    ...['es', 'zh-CN', 'zh-TW', 'ja'].flatMap((locale) =>
+      Object.keys(JSON.parse(readFileSync(`src/renderer/locales/${locale}.json`, 'utf8'))),
+    ),
+  ]);
+  expect([...keys].filter((source) => !Object.hasOwn(fr, source))).toEqual([]);
   const args = (value: string) => (value.match(/\{\d+\}/g) ?? []).sort();
   for (const [source, value] of Object.entries(fr)) {
     expect(value.trim(), source).not.toBe('');
