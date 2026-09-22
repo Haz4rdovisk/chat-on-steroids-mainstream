@@ -60,3 +60,26 @@ suites skipped by the failed `&&` step passed when run separately (26/26). Thus 
 `npm run verify` is not green as one command, despite the passing isolated checks.
 Internal Chromium `npm run verify` completed with exit code 0: broad suite 5917 passed,
 46 skipped, followed by 26/26 final-suite tests. No installed-app smoke was performed.
+
+## Canonical chunk fade follow-up
+
+After approving a temporary 360 ms visual experiment outside the repositories, the user asked
+for its initial entrance and per-chunk fade in the actual app. Both forks now paint each full
+canonical Markdown revision immediately, while an opacity-only 360 ms animation applies to the
+first live response and to newly appended visible text. On a later revision the initial-entry
+class is removed, so the entire response does not fade again. Rewritten/non-append revisions,
+historical rows, OS reduced-motion requests, and append bursts above 2,048 visible characters
+paint without chunk animation. This is presentation only: no text reveal timer, queue, turn
+status, Copy or Stop behavior was changed.
+
+The focused timeline cases passed 4/4 in each fork after the final class fix, including direct
+canonical projection, initial/chunk boundaries, reduced motion and live-tail behavior. Typecheck,
+build and `git diff --check` passed in both forks. The two implementation patches and timeline
+test patch match across forks; the stylesheet itself differs elsewhere because Internal Chromium
+has its separate browser UI.
+
+The mainstream broad verify run reported 5,931 passing, one failing unrelated completed-process
+result case and 46 skipped; its exact failure passed alone, and the final 26 tests passed
+separately. The Internal Chromium broad verify run exposed a separate rapid-New-Chat test failure
+under load, which passed alone. Neither broad run is claimed green as one command. No installed
+app visual check or installer build was run for this follow-up.

@@ -2340,7 +2340,8 @@ input[readonly] {
 .said { padding: 8px 0; border-radius: 0; background: transparent; }
 
 .assistant-response { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
-.assistant-response.is-entering { animation: assistant-response-in 140ms ease-out both; }
+.assistant-response.is-entering > .assistant-message-content,
+.assistant-response .assistant-new-chunk { animation: assistant-response-in 360ms cubic-bezier(.16, 1, .3, 1) both; }
 .assistant-message-content { width: 100%; }
 .assistant-message-actions { display: flex; align-items: center; min-height: 28px; margin-top: 3px; }
 .assistant-copy {
@@ -3150,7 +3151,7 @@ nav button:hover, nav button.is-sel { background: var(--hover); color: var(--ink
 @keyframes sidebar-content-in { from { opacity: .35; transform: translateX(-6px); clip-path: inset(0 0 0 8px); } to { opacity: 1; transform: translateX(0); clip-path: inset(0); } }
 @keyframes message-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes message-fade { from { opacity: 0; } to { opacity: 1; } }
-@keyframes assistant-response-in { from { opacity: .38; } to { opacity: 1; } }
+@keyframes assistant-response-in { from { opacity: .08; } to { opacity: 1; } }
 @keyframes turn-status-snake { 0%, 12.5% { opacity: 1; } 25% { opacity: .62; } 37.5% { opacity: .3; } 50%, 100% { opacity: .14; } }
 @keyframes turn-status-complete { from { opacity: 0; transform: rotate(-14deg) scale(.58); } to { opacity: 1; transform: rotate(0) scale(1); } }
 .composer-menu[open] > .composer-popover { transform-origin: bottom right; animation: surface-in 140ms ease-out; }

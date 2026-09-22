@@ -2284,6 +2284,32 @@ it('renders each canonical assistant revision directly and offers copy only afte
   expect(app.live.copied).toEqual([finalTarget]);
 });
 
+it('fades the first live answer and only the appended visible text of later Markdown revisions', async () => {
+  const message: Extract<SessionEvent, { kind: 'assistant_message' }> = { seq: 1, time: T0, source: 'extension',
+    kind: 'assistant_message', messageId: 'fading-answer', message: text('Start'), state: 'streaming', final: false };
+  const app = await boot([]);
+  await app.append([message]);
+  const box = app.w.document.querySelector<HTMLElement>('.assistant-response')!;
+  expect(box.classList.contains('is-entering')).toBe(true);
+  const content = () => box.querySelector<HTMLElement>('.assistant-message-content')!;
+  expect(content().textContent?.trimEnd()).toBe('Start');
+
+  await app.append([{ ...message, seq: 2, message: text('Start and **continued**.') }]);
+  expect(box.classList.contains('is-entering')).toBe(false);
+  expect(content().textContent?.trimEnd()).toBe('Start and continued.');
+  expect(content().querySelector('strong')?.textContent).toBe('continued');
+  expect([...content().querySelectorAll('.assistant-new-chunk')].map(node => node.textContent).join('')).toBe(' and continued.');
+  expect(content().querySelector('p')?.firstChild?.textContent).toBe('Start');
+
+  await app.append([{ ...message, seq: 3, message: text('Start and **continued**.\n\nA new paragraph.') }]);
+  expect([...content().querySelectorAll('.assistant-new-chunk')].map(node => node.textContent).join('')).toBe('A new paragraph.');
+  expect(content().querySelectorAll('p')).toHaveLength(2);
+
+  await app.append([{ ...message, seq: 4, message: text('A revised answer.') }]);
+  expect(content().textContent?.trimEnd()).toBe('A revised answer.');
+  expect(content().querySelector('.assistant-new-chunk')).toBeNull();
+});
+
 it('keeps Copy after the last final of a turn, not among later tools or earlier final messages', async () => {
   const turnId = 'late-tools-copy';
   const first: Extract<SessionEvent, { kind: 'assistant_message' }> = { seq: 2, time: T0 + 1000,
@@ -2433,6 +2459,7 @@ it('projects streaming revisions immediately when reduced motion is requested', 
   app.notifySession();
   await settle(430);
   expect(app.w.document.querySelector('.assistant-message-content')!.textContent?.trimEnd()).toBe(target);
+  expect(app.w.document.querySelector('.assistant-new-chunk')).toBeNull();
 });
 
 it('keeps an unfolded tool row as the same open node while the chat keeps appending', async () => {

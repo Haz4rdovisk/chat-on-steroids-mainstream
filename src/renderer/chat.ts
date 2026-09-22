@@ -1795,6 +1795,30 @@ interface AssistantProjection {
 }
 
 const assistantProjections = new WeakMap<HTMLElement, AssistantProjection>();
+const MAX_ASSISTANT_CHUNK_FADE_CHARS = 2_048;
+
+/** Fade only newly appended visible text; the complete canonical revision is already on screen. */
+function fadeAssistantAppend(previous: HTMLElement, next: HTMLElement): void {
+  // Marked adds layout newlines after block tags; they are not part of the visible tail.
+  const before = (previous.textContent ?? '').trimEnd();
+  const after = (next.textContent ?? '').trimEnd();
+  const added = after.length - before.length;
+  if (added <= 0 || added > MAX_ASSISTANT_CHUNK_FADE_CHARS || !after.startsWith(before)) return;
+  const walker = document.createTreeWalker(next, document.defaultView!.NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text);
+  let unchanged = before.length;
+  for (const node of nodes) {
+    if (unchanged >= node.length) { unchanged -= node.length; continue; }
+    if (node.parentElement === next && !node.data.trim()) continue;
+    const fresh = unchanged ? node.splitText(unchanged) : node;
+    const span = document.createElement('span');
+    span.className = 'assistant-new-chunk';
+    fresh.replaceWith(span);
+    span.append(fresh);
+    unchanged = 0;
+  }
+}
 
 function sameRecordedTurn(left: SessionEvent, right: SessionEvent): boolean {
   if (typeof left.turnOrigin === 'number' && typeof right.turnOrigin === 'number')
@@ -1836,14 +1860,17 @@ function repaintAssistantCopies(): void {
   }
 }
 
-function paintAssistantContent(box: HTMLElement, state: AssistantProjection, source: string, capture?: StoredText): void {
+function paintAssistantContent(box: HTMLElement, state: AssistantProjection, source: string, animate: boolean, capture?: StoredText): void {
   const pane = box.isConnected && timelineOwnsSharedScroll() ? $('chatBody') : null;
   const paneTop = pane?.getBoundingClientRect().top ?? 0;
   const before = pane ? box.getBoundingClientRect() : null;
   const content = renderedMarkdown(source, capture);
   content.classList.add('assistant-message-content');
+  if (animate && box.isConnected && source.length > state.source.length && source.startsWith(state.source) &&
+      !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) fadeAssistantAppend(state.content, content);
   state.content.replaceWith(content);
   state.content = content;
+  state.source = source;
   if (pane && before && before.bottom <= paneTop) pane.scrollTop += box.getBoundingClientRect().height - before.height;
 }
 
@@ -1863,8 +1890,8 @@ function updateAssistantBox(
     assistantProjections.set(box, state);
     box.append(content);
   } else {
-    state.source = source;
-    paintAssistantContent(box, state, source, event.renderedHtml);
+    box.classList.remove('is-entering');
+    paintAssistantContent(box, state, source, animate, event.renderedHtml);
   }
   if (animate && source.trim()) clearPresentedThinkingFeedback();
   const final = event.final === true;
