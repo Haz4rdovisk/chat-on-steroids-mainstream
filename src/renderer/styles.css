@@ -2264,9 +2264,9 @@ input[readonly] {
 /* ---------------------------------------------------------- timeline */
 
 #timeline {
-  padding: 8px 0 10px;
+  padding: calc(8px + var(--timeline-virtual-before, 0px)) 0 calc(10px + var(--timeline-virtual-after, 0px));
 }
-#timeline:has(+ #inputQueue > :is(.pending-message, .assistant-thinking)) { padding-bottom: 0; }
+#timeline:has(+ #inputQueue > :is(.pending-message, .assistant-thinking)) { padding-bottom: var(--timeline-virtual-after, 0px); }
 /* Reserve follows recorded AND pending messages, never separates their bubbles. */
 #timelineContent { padding-bottom: var(--timeline-scroll-reserve, 0px); }
 

@@ -13,7 +13,7 @@ import { messageReaction, withoutMessageReaction } from '../shared/message-react
 import { goalErrorMessage } from '../shared/goal-errors.js';
 import type { GoalModel } from '../shared/goal-reasoning.js';
 import { renderGoalReasoning } from './goal-reasoning.js';
-import { preserveTimelineViewport } from './timeline-scroll.js';
+import { preserveTimelineViewport, projectTimelineExtent, type TimelineExtent } from './timeline-scroll.js';
 import { createSidebarOrder, SIDEBAR_PROJECT_SCOPE } from './sidebar-order.js';
 import { toolResultText } from './tool-result.js';
 import { chatErrorPresentation, duplicateChatErrors } from './chat-error.js';
@@ -252,6 +252,7 @@ function attachmentCard(file: InputAttachment, inComposer = false): HTMLElement 
 
 let events: SessionEvent[] = [];
 let totalEvents = 0;
+let timelineExtent: TimelineExtent | null = null;
 /** The session whose `events`/cursor pair belongs together. */
 let detailFor: string | null = null;
 let detailCursor: number | null = null;
@@ -2057,13 +2058,28 @@ async function fillTimelineHistory(): Promise<void> {
         historyDemand = null;
         break;
       }
-      const pane = $('chatBody'), timeline = $('timelineContent');
+      const pane = $('chatBody'), timeline = $('timelineContent'), rows = $('timeline');
       const buffer = Math.min(480, Math.max(160, pane.clientHeight / 2));
       const reserve = Number.parseFloat(timeline.style.getPropertyValue('--timeline-scroll-reserve')) || 0;
+      const viewport = pane.getBoundingClientRect();
+      const edgeRow = (first: boolean): DOMRect | null => {
+        for (let child = first ? rows.firstElementChild : rows.lastElementChild; child;
+          child = first ? child.nextElementSibling : child.previousElementSibling) {
+          const rect = child.getBoundingClientRect();
+          if (rect.height > 0) return rect;
+        }
+        return null;
+      };
+      const firstRow = edgeRow(true), lastRow = edgeRow(false);
+      const rowHeight = rows.getBoundingClientRect().height;
+      const virtualTop = Number.parseFloat(rows.style.getPropertyValue('--timeline-virtual-before')) || 0;
+      const virtualBottom = Number.parseFloat(rows.style.getPropertyValue('--timeline-virtual-after')) || 0;
+      const contentHeight = timeline.getBoundingClientRect().height - virtualTop - virtualBottom - reserve;
       const nearEdge = demand.opening
-        ? timeline.getBoundingClientRect().height - reserve < pane.clientHeight + buffer
-        : demand.direction < 0 ? pane.scrollTop <= buffer
-          : pane.scrollHeight - reserve - pane.clientHeight - pane.scrollTop <= buffer;
+        ? contentHeight < pane.clientHeight + buffer
+        : demand.direction < 0 ? (rowHeight > 0 && firstRow ? firstRow.top >= viewport.top - buffer : pane.scrollTop <= buffer)
+          : (rowHeight > 0 && lastRow ? lastRow.bottom <= viewport.top + pane.clientHeight + buffer
+            : pane.scrollHeight - reserve - pane.clientHeight - pane.scrollTop <= buffer);
       if (pane.clientHeight <= 0 || !nearEdge || (demand.direction > 0 && historyBefore === null)) {
         historyDemand = null;
         break;
@@ -2090,7 +2106,10 @@ async function fillTimelineHistory(): Promise<void> {
         filledOpening = true;
       }
       if (next === cursor) {
-        if (demand.direction < 0) historyStart = cursor;
+        if (demand.direction < 0) {
+          historyStart = cursor;
+          paintDetail(false);
+        }
         if (demand === historyDemand) historyDemand = null;
       }
       await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
@@ -2474,6 +2493,36 @@ function visibleEvents(): SessionEvent[] {
   if (agentFilter === null) return events;
   if (agentFilter === UNATTRIBUTED) return events.filter((event) => !event.agent);
   return events.filter((event) => event.agent === agentFilter);
+}
+
+function syncTimelineExtent(): void {
+  const timeline = $('timeline');
+  if (!selectedId || agentFilter !== null || events.length === 0 || totalEvents <= events.length) {
+    timelineExtent = null;
+    timeline.style.removeProperty('--timeline-virtual-before');
+    timeline.style.removeProperty('--timeline-virtual-after');
+    return;
+  }
+  const top = Number.parseFloat(timeline.style.getPropertyValue('--timeline-virtual-before')) || 0;
+  const bottom = Number.parseFloat(timeline.style.getPropertyValue('--timeline-virtual-after')) || 0;
+  const renderedHeight = Math.max(0, timeline.getBoundingClientRect().height - top - bottom);
+  if (renderedHeight <= 0) {
+    timelineExtent = null;
+    timeline.style.removeProperty('--timeline-virtual-before');
+    timeline.style.removeProperty('--timeline-virtual-after');
+    return;
+  }
+  const first = Math.min(...events.map(positionOf));
+  const last = Math.max(...events.map(positionOf));
+  const before = historyStart === first ? 0 : Math.max(0, first - 1);
+  const after = historyBefore === null ? 0 : Math.max(0, totalEvents - last);
+  const projected = projectTimelineExtent(timelineExtent, {
+    session: selectedId, selection: selectionGeneration, total: totalEvents,
+    resident: events.length, before, after, renderedHeight
+  });
+  timelineExtent = projected.extent;
+  if (top !== projected.before) timeline.style.setProperty('--timeline-virtual-before', `${projected.before}px`);
+  if (bottom !== projected.after) timeline.style.setProperty('--timeline-virtual-after', `${projected.after}px`);
 }
 
 /** Eviction follows the measured reader viewport, not an arbitrary half-page.
@@ -3030,6 +3079,7 @@ function paintDetail(followBottom = historyBefore === null, animateAssistant = f
   for (const key of rowCache.keys()) if (!keep.has(key)) rowCache.delete(key);
   reconcileChildren($('timeline'), groupImageRows(groupToolRows(timelineRows)));
   paintPendingInputs();
+  syncTimelineExtent();
   $('timelineEmpty').hidden = selectedId !== null || timelineRows.length > 0 || $('inputQueue').childElementCount > 0;
   paintDeliveryControls();
   paintStateLine();
@@ -4914,6 +4964,12 @@ export function initChat(next: Deps): void {
     // earlier reconciliation is not part of the collapsed headline's height.
     if ((event.target as Element).closest('summary')) $('timelineContent').style.removeProperty('--timeline-scroll-reserve');
   });
+  $('timeline').addEventListener('toggle', () => {
+    // Expanded output changes the measured page, so its old visual estimate is no
+    // longer a valid scroll range for the collapsed or expanded layout.
+    timelineExtent = null;
+    syncTimelineExtent();
+  }, true);
 
   $('chatView').addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-view]');

@@ -1396,6 +1396,11 @@ hidden-output byte limit must not discard them. A large collapsed group can rema
 until it leaves the measured area. Tool argument/result DOM is populated only on expansion,
 so large hidden outputs neither consume paint work nor evict surrounding messages. Empty live
 deltas preserve the resident page instead of silently applying a new eviction pass.
+The viewport owner also reserves a bounded visual scroll extent around unloaded pages so the
+native scrollbar does not resize when a 30-record stage enters or leaves the 160-record window.
+This estimate never decides event identity, retention or fetch boundaries. Edge demand follows
+the first/last rendered row, not the virtual padding; session/filter/disclosure changes retire
+obsolete geometry. Direct seeking still drains bounded history stages before showing distant rows.
 Overlapping activity groups keep their disclosure identity across page boundaries. The
 viewport owner preserves a surviving visible row and any underfilled tail space; new
 content consumes that space, while an unchanged refresh cannot collapse it. Compensating for
