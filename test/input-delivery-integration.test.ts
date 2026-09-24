@@ -1339,6 +1339,7 @@ it('freezes the complete current prompt for each new chat and leaves the authore
   const canonical = await currentCoreInstructions();
   const claim = await input.claimBrowserInput(first.id, 'exact-document', null, true);
   expect(claim?.text).toBe(prependUserPrompt('First request', canonical));
+  expect(claim?.draftText).toBe('First request');
   expect(claim?.text).toContain(standing);
   expect((await input.listInputs()).find(row => row.id === first.id)?.text).toBe('First request');
   await saveConfig({ ...config, mcp: { ...config.mcp, instructions: 'Updated standing guidance' } });
@@ -1347,6 +1348,7 @@ it('freezes the complete current prompt for each new chat and leaves the authore
   const second = await input.enqueueInput({ ...message(null, 'off'), mode: 'auto', text: 'Second request' });
   const next = await input.claimBrowserInput(second.id, 'next-document', null, true);
   expect(next?.text).toBe(prependUserPrompt('Second request', await currentCoreInstructions()));
+  expect(next?.draftText).toBe('Second request');
   expect(userPromptText(next!.text)).toBe('Second request');
 });
 

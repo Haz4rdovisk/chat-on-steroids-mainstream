@@ -674,27 +674,37 @@ var CLF_DOM = (() => {
       return current.length === files.length && current.every(node => files.includes(node)) &&
         !host.querySelector('[aria-busy="true"], [role="progressbar"], [data-inline-file-uploading]');
     };
+    const removeAttachments = async () => {
+      if (!ownsAttachments() || !host) return false;
+      const current = [...host.querySelectorAll('button[aria-label]')].filter(node => composerFileName(node));
+      if (current.length !== files.length || current.some(node => !files.includes(node)) ||
+          host.querySelector('[aria-busy="true"], [role="progressbar"], [data-inline-file-uploading]')) return false;
+      for (const node of current) {
+        if (!same() || !node.isConnected) return false;
+        node.click();
+      }
+      if (current.length) await new Promise(resolve => {
+        let observer, timer;
+        const finish = () => { observer?.disconnect(); clearTimeout(timer); resolve(); };
+        const check = () => { if (!same() || !hasComposerAttachments()) finish(); };
+        observer = new MutationObserver(check);
+        observer.observe(host, { childList: true, subtree: true, attributes: true });
+        timer = setTimeout(finish, 1500); check();
+      });
+      return same() && !hasComposerAttachments();
+    };
     return {
       attachments(nodes) { if (same()) files = [...nodes]; },
       current: ownsAttachments,
       async clear() {
-        if (!ownsAttachments() || !host) return false;
-        const current = [...host.querySelectorAll('button[aria-label]')].filter(node => composerFileName(node));
-        if (current.length !== files.length || current.some(node => !files.includes(node)) ||
-            host.querySelector('[aria-busy="true"], [role="progressbar"], [data-inline-file-uploading]')) return false;
-        for (const node of current) {
-          if (!same() || !node.isConnected) return false;
-          node.click();
-        }
-        if (current.length) await new Promise(resolve => {
-          let observer, timer;
-          const finish = () => { observer?.disconnect(); clearTimeout(timer); resolve(); };
-          const check = () => { if (!same() || !hasComposerAttachments()) finish(); };
-          observer = new MutationObserver(check);
-          observer.observe(host, { childList: true, subtree: true, attributes: true });
-          timer = setTimeout(finish, 1500); check();
-        });
-        return same() && !hasComposerAttachments() && clearPromptExact(value);
+        return await removeAttachments() && clearPromptExact(value);
+      },
+      async restoreAuthored(next) {
+        if (typeof next !== 'string' || !await removeAttachments() || !same()) return false;
+        // Authority was proved against the original exact text/editor immediately
+        // before this one native replacement. insertPrompt rechecks the editor,
+        // focus and selection; a user edit or React remount therefore wins.
+        return insertPrompt(next, true);
       },
       dispose() { for (const name of events) host?.removeEventListener(name, changed, true); }
     };

@@ -524,6 +524,7 @@ const commandWrites = new Map<string, Promise<boolean>>();
 const commandRedeems = new Map<string, Promise<void>>();
 let requestWindow = { start: Date.now(), count: 0 };
 const listeners = new Set<() => void>();
+const sessionActivityListeners = new Set<() => void>();
 let extensionVersion: string | null = null;
 let versionWarned = false;
 let latestCompanionDiagnostics: CompanionDiagnostics | null = null;
@@ -696,6 +697,12 @@ function clearCompanionDiagnostics(): void {
 export function onBridgeChange(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Runtime work grants affect session presentation without mutating durable history. */
+export function onSessionActivityChange(listener: () => void): () => void {
+  sessionActivityListeners.add(listener);
+  return () => sessionActivityListeners.delete(listener);
 }
 
 function changed(): void {
@@ -6057,13 +6064,17 @@ async function restoreReturnedPageActivity(conversationId: string, sessionId: st
 
 /** A real terminal — stable final answer, explicit stop, worker finish — spends the deadline. */
 function endActivity(conversationId: string): void {
-  activeUntil.delete(conversationId);
+  if (activeUntil.delete(conversationId)) {
+    for (const listener of sessionActivityListeners) listener();
+  }
   armSilenceSweep();
 }
 
 /** Drops a chat out of the activity ledger entirely, once nothing is waiting on it. */
 function forgetActivity(conversationId: string): void {
-  activeUntil.delete(conversationId);
+  if (activeUntil.delete(conversationId)) {
+    for (const listener of sessionActivityListeners) listener();
+  }
   armSilenceSweep();
 }
 

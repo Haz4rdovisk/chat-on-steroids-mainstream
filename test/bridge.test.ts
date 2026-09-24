@@ -53,6 +53,7 @@ const {
   companionDiagnostics,
   sessionControlsFor,
   onBridgeChange,
+  onSessionActivityChange,
   compactSession,
   setSessionObjective,
   unattributedRepairEta,
@@ -1204,7 +1205,7 @@ describe('activity feed', () => {
       expect(row).toMatchObject({ id, sessionId: id, opening: true, conversationId: null });
       expect((await request('POST', '/input/claim', { body: {
         id, owner, conversationId: null, requiresAuthorization: true
-      } })).body.input).toMatchObject({ id, owner, opening: true });
+      } })).body.input).toMatchObject({ id, owner, opening: true, draftText: 'Open the exact reserved task' });
       expect((await request('POST', '/input/claim', { body: {
         id, owner, conversationId: null, authorize: true
       } })).body).toEqual({ ok: true });
@@ -9265,37 +9266,42 @@ describe('unattributed activity recovery', () => {
       await tool();
       const sessionId = (await request('GET', `/activity?conversationId=${chat}`)).body.sessionId;
       const { sessionInputActivity, sessionActivityExpiresAt } = await import('../src/main/bridge.js');
+      const activityChanged = vi.fn();
+      const unsubscribeActivity = onSessionActivityChange(activityChanged);
       await vi.advanceTimersByTimeAsync(1000);
-      await events(chat, [{ kind: 'assistant_message', messageId: 'trailing-native-answer', turnId, time: Date.now(),
-        providerMessageId: '11111111-2222-4333-8444-555555555555', text: 'The requested check is complete.',
-        final: true, state: 'final', activeNow: true }, endTurn(turnId, 'completed')]);
-      await vi.advanceTimersByTimeAsync(3000);
-      await tool();
-      const summary = (await getSession(sessionId))!;
-      expect(summary.activeTurnId).toBeNull();
-      expect(sessionActivityExpiresAt(summary)).toBeNull();
-      expect(sessionInputActivity(summary)).toMatchObject({ exact: false, possible: false });
-      expect((await sessionControlsFor(sessionId)).recovery).toEqual([]);
-      const { readCompletedFinal, readEvents } = await import('../src/main/session/store.js');
-      expect(await readCompletedFinal(sessionId, chat)).toMatchObject({ messageId: 'trailing-native-answer' });
-      const { sessionInputPolicy } = await import('../src/main/session/input.js');
-      expect(await sessionInputPolicy(sessionId, sessionInputActivity(summary))).toMatchObject({
-        settled: true, browserAllowed: true, canInject: false
-      });
-      const history = await readEvents(sessionId);
-      const lastCall = history.findLastIndex(event => event.kind === 'tool_call');
-      expect(lastCall).toBeLessThan(history.findIndex(event => event.kind === 'assistant_message'));
-      await vi.advanceTimersByTimeAsync(PRO_ACTIVITY_MS + CHAT_SILENCE_MS);
-      await sweepStaleSwarm(Date.now());
-      expect((await sessionControlsFor(sessionId)).recovery).toEqual([]);
-      expect((await maintenanceBatch()).some(repair => repair.conversationId === chat)).toBe(false);
-      await events(chat, [openTurn('next-native-turn')]);
-      const next = (await getSession(sessionId))!;
-      const nextExpiry = sessionActivityExpiresAt(next);
-      await vi.advanceTimersByTimeAsync(1000);
-      await tool();
-      expect((await getSession(sessionId))?.activeTurnId).toBe('next-native-turn');
-      expect(sessionActivityExpiresAt((await getSession(sessionId))!)).toBe(nextExpiry);
+      try {
+        await events(chat, [{ kind: 'assistant_message', messageId: 'trailing-native-answer', turnId, time: Date.now(),
+          providerMessageId: '11111111-2222-4333-8444-555555555555', text: 'The requested check is complete.',
+          final: true, state: 'final', activeNow: true }, endTurn(turnId, 'completed')]);
+        expect(activityChanged).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(3000);
+        await tool();
+        const summary = (await getSession(sessionId))!;
+        expect(summary.activeTurnId).toBeNull();
+        expect(sessionActivityExpiresAt(summary)).toBeNull();
+        expect(sessionInputActivity(summary)).toMatchObject({ exact: false, possible: false });
+        expect((await sessionControlsFor(sessionId)).recovery).toEqual([]);
+        const { readCompletedFinal, readEvents } = await import('../src/main/session/store.js');
+        expect(await readCompletedFinal(sessionId, chat)).toMatchObject({ messageId: 'trailing-native-answer' });
+        const { sessionInputPolicy } = await import('../src/main/session/input.js');
+        expect(await sessionInputPolicy(sessionId, sessionInputActivity(summary))).toMatchObject({
+          settled: true, browserAllowed: true, canInject: false
+        });
+        const history = await readEvents(sessionId);
+        const lastCall = history.findLastIndex(event => event.kind === 'tool_call');
+        expect(lastCall).toBeLessThan(history.findIndex(event => event.kind === 'assistant_message'));
+        await vi.advanceTimersByTimeAsync(PRO_ACTIVITY_MS + CHAT_SILENCE_MS);
+        await sweepStaleSwarm(Date.now());
+        expect((await sessionControlsFor(sessionId)).recovery).toEqual([]);
+        expect((await maintenanceBatch()).some(repair => repair.conversationId === chat)).toBe(false);
+        await events(chat, [openTurn('next-native-turn')]);
+        const next = (await getSession(sessionId))!;
+        const nextExpiry = sessionActivityExpiresAt(next);
+        await vi.advanceTimersByTimeAsync(1000);
+        await tool();
+        expect((await getSession(sessionId))?.activeTurnId).toBe('next-native-turn');
+        expect(sessionActivityExpiresAt((await getSession(sessionId))!)).toBe(nextExpiry);
+      } finally { unsubscribeActivity(); }
     } finally { vi.useRealTimers(); }
   });
 

@@ -95,6 +95,7 @@ import {
   cancelWorkerCommands,
   chatUrl,
   onBridgeChange,
+  onSessionActivityChange,
   startBridge,
   stopBridge,
   sweepStaleSwarm,
@@ -1461,6 +1462,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
   };
   onStatusChange(pushState);
   onBridgeChange(pushState);
+  // The activity grant is runtime-only, so its retirement has no store mutation to emit this.
+  onSessionActivityChange(() => push('session:changed'));
   // Draft stages belong to session controls; state:changed only refreshes settings.
   onGoalChange(() => push('session:changed'));
   handle('tasks:cancel', async payload => cancelTaskRequest(z.object({ requestId: z.string().uuid() }).parse(payload).requestId));

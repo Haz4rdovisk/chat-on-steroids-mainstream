@@ -707,10 +707,50 @@
    */
   const USER_SEND_RECEIPT_MS = 30_000;
   let userSendReceipt = null;
+  // Exact native rows that this document matched to an app-owned prepared Send.
+  // Conversation (or the fresh-page epoch) plus row id remains the owner; this
+  // cache only preserves pre-serialization bytes for presentation/recording after
+  // ChatGPT escapes Markdown or autolinks.
+  const submittedUserText = new Map();
   const pageViewChecks = new Set(); // Existing readiness waits also observe accepted MAIN-world snapshots.
   const sendText = (value) => String(value || '').replace(/\s+/g, '');
   /** Undo page-readback punctuation escapes only; never rewrite authored Send text. */
   const unescapeMarkdown = (value) => String(value || '').replace(/\\([!-\/:-@\[-`{-~])/g, '$1');
+  /** ChatGPT can serialize a bare URL as the equivalent `[url](url)` after Send. */
+  const collapseProviderAutolinks = (value) => String(value || '')
+    .replace(/\[(https?:\/\/[^\]\r\n]+)\]\(\1\)/g, '$1');
+  /** Candidate source forms produced by the provider's reversible Markdown serializer.
+   * The original source is always tried first; authored text is never normalized. */
+  function providerReadbackCandidates(value) {
+    const original = String(value || ''), unescaped = unescapeMarkdown(original), autolinks = collapseProviderAutolinks(unescaped);
+    return [original, ...(unescaped !== original ? [unescaped] : []), ...(autolinks !== unescaped ? [autolinks] : [])];
+  }
+  const promptFrameHint = (value) => /^(?:\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n)?\[\[COS_CONTEXT:\d{1,6}\]\](?:\n|$)/
+    .test(String(value || '').replace(/\r\n?/g, '\n').trimStart());
+  /** Recover only a complete length-delimited app frame. Provider Markdown escapes
+   * are removed from the private prefix only; authored suffix bytes are never guessed. */
+  function recoveredPromptFrame(value) {
+    const normalized = String(value || '').replace(/\r\n?/g, '\n').trimStart();
+    if (CLF_DOM.userPromptText(normalized) !== null) return normalized;
+    const identity = /^(?:\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n)?/.exec(normalized)?.[0] ?? '';
+    const header = /^\[\[COS_CONTEXT:(\d{1,6})\]\]\n/.exec(normalized.slice(identity.length));
+    if (!header) return null;
+    const contextStart = identity.length + header[0].length;
+    const expectedLength = Number(header[1]);
+    const boundary = '\n[[/COS_CONTEXT]]\n\n';
+    let boundaryAt = normalized.indexOf(boundary, contextStart);
+    let attempts = 0;
+    while (boundaryAt >= 0 && attempts++ < 32) {
+      const encodedContext = normalized.slice(contextStart, boundaryAt);
+      const context = unescapeMarkdown(encodedContext);
+      if (context.length === expectedLength) {
+        const recovered = normalized.slice(0, contextStart) + context + normalized.slice(boundaryAt);
+        return CLF_DOM.userPromptText(recovered) !== null ? recovered : null;
+      }
+      boundaryAt = normalized.indexOf(boundary, boundaryAt + 1);
+    }
+    return null;
+  }
   /** The leading continuation marker, as typed or as the composer escaped it. */
   const markedAs = (value) => {
     const text = String(value || '');
@@ -743,7 +783,26 @@
     if (authored.length > 1) return null;
     // A current exact-id provider object supersedes display text. If absent, an unchanged
     // plain-text bubble retains the existing exact-text receipt contract; no Markdown stripping.
-    const actual = authored.length === 1 ? authored[0].rawText : message.text;
+    const raw = authored.length === 1 ? authored[0].rawText : message.text;
+    const receiptPrepared = userSendReceipt?.preparedText;
+    const pendingPrepared = typeof receiptPrepared === 'string' &&
+      CLF_DOM.userPromptText(receiptPrepared.trimStart()) !== null &&
+      message.id !== userSendReceipt?.previousMessageId &&
+      Date.now() - userSendReceipt.at <= USER_SEND_RECEIPT_MS &&
+      providerReadbackCandidates(raw).some(candidate => sendText(candidate) === sendText(receiptPrepared))
+      ? receiptPrepared : null;
+    const remembered = submittedUserText.get(message.id);
+    const currentConversation = CLF_DOM.conversationId();
+    const rememberedOwner = remembered && (remembered.conversationId
+      ? remembered.conversationId === currentConversation
+      : remembered.epoch === epoch && currentConversation === null);
+    const submitted = rememberedOwner &&
+      providerReadbackCandidates(raw).some(candidate => sendText(candidate) === sendText(remembered.text))
+      ? remembered.text : null;
+    // A later edit to this exact accepted row retires its cached source. Merely
+    // visiting another conversation does not destroy the historical row's proof.
+    if (rememberedOwner && submitted === null) submittedUserText.delete(message.id);
+    const actual = submitted ?? pendingPrepared ?? raw;
     return typeof actual === 'string' && actual.length <= 256000 ? { text: actual, canonical: authored.length === 1,
       ...(authored[0]?.attachments?.length ? { attachments: authored[0].attachments } : {}) } : null;
   }
@@ -755,7 +814,19 @@
   function matchesSubmittedUser(message, expected) {
     if (typeof expected !== 'string' || expected.length > 240000) return false;
     const source = userMessageSource(message);
-    return source !== null && sendText(source.text) === sendText(expected);
+    if (source === null) return false;
+    const wanted = sendText(expected);
+    if (sendText(source.text) === wanted) return true;
+    // Ordinary browser-authored messages retain exact comparison. Only a complete,
+    // length-delimited app frame recovered from the native user row may accept the
+    // provider's reversible readback serialization. `expected` came through a rich
+    // editor and may have had its paragraph breaks flattened before native Send.
+    if (recoveredPromptFrame(source.text) === null) return false;
+    return providerReadbackCandidates(source.text).slice(1).some(candidate => sendText(candidate) === wanted);
+  }
+  function presentedUserPrompt(message) {
+    const source = userMessageSource(message);
+    return source ? recoveredPromptFrame(source.text) ?? source.text : null;
   }
   /** An app-owned bootstrap may return escaped. Ordinary input authorization keeps
    * matchesSubmittedUser; native message identity and document lifetime still own the receipt. */
@@ -828,13 +899,16 @@
     // observing that question until its whole answer is already on screen; a rolling
     // observation baseline would then misclassify the answer as pre-existing history.
     const sections = assistantSections();
+    const preparedText = typeof userSendReceipt?.preparedText === 'string' &&
+      sendText(userSendReceipt.preparedText) === text ? userSendReceipt.preparedText : null;
     userSendReceipt = {
       text,
       attachmentNames,
       conversationId: CLF_DOM.conversationId(),
       previousMessageId,
       baseline: { sections, marks: sections.slice(-3).map(node => ({ node, mark: sectionMark(node) })) },
-      at: Date.now()
+      at: Date.now(),
+      ...(preparedText !== null ? { preparedText } : {})
     };
   }
   document.addEventListener('click', (event) => {
@@ -2097,8 +2171,9 @@
         // Rendered inline code can remove Markdown bytes even inside a pre-wrap
         // bubble. Do not publish a broken transport frame while its exact source
         // is pending. A canonical user-authored marker remains literal text.
-        if (!source.canonical && /^\[\[COS_CONTEXT:\d{1,6}\]\]/.test(source.text) && CLF_DOM.userPromptText(source.text) === null) continue;
-        const text = source.text;
+        const recoveredFrame = recoveredPromptFrame(source.text);
+        if (promptFrameHint(source.text) && recoveredFrame === null) continue;
+        const text = recoveredFrame ?? source.text;
         const key = occurrenceKey(message.id, text);
         const reaction = CLF_DOM.userMessageReaction(message);
         // Dedupe answers "have we journalled this row?"; authoredNow answers "did this row
@@ -2216,7 +2291,7 @@
     // belongs to A's original recorder; do not adopt it while preparing the fresh composer.
     if (commandAttempt?.projectEntry && CLF_DOM.conversationId() === OPENED_CONVERSATION) return;
     lastTranscriptObservationAt = Date.now();
-    CLF_DOM.presentUserPrompts?.(message => userMessageSource(message)?.text ?? null);
+    CLF_DOM.presentUserPrompts?.(presentedUserPrompt);
     publishDesktopDecisionPartial();
     const id = CLF_DOM.conversationId();
     // One DOM turn snapshot per observation, created lazily because a transient id-less route
@@ -2235,7 +2310,8 @@
     // mapping and terminalise a bound worker even though its model kept running. Real tab
     // lifetime is owned by chrome.tabs.onRemoved in background.js; an SPA move is proven
     // here only when another concrete conversation id replaces the old one.
-    if (id && id !== conversationId) {
+    const routeChanged = Boolean(id && id !== conversationId);
+    if (routeChanged) {
       // A dispatched opening may learn its route before the provider exposes its exact
       // authored user row. Keep that operation pending; only the receipt below binds it.
       const opening = pendingObjectiveSend?.current() ? {
@@ -2304,6 +2380,11 @@
         }
       }
     }
+    // A fresh native user row can mount before ChatGPT assigns `/c/<id>`. The
+    // row is valid acceptance evidence but cannot be ACKed without its route.
+    // Route reconciliation is therefore an evidence edge for the existing Send
+    // observer; no second click, timeout or reconstructed receipt is introduced.
+    if (routeChanged) for (const check of pageViewChecks) void check();
     flushStreamRequestOrigins();
     // Route assignment and authored text can arrive in either order. This receipt is
     // evaluated on the existing observer, rather than only on the one route-change edge.
@@ -3929,7 +4010,7 @@
     // old final look activeNow/Goal-eligible even though no generation is open. Stop after the
     // same route/epoch-validated Fiber snapshot has updated presentation identity.
     if (presentationOnly) return true;
-    CLF_DOM.presentUserPrompts?.(message => userMessageSource(message)?.text ?? null);
+    CLF_DOM.presentUserPrompts?.(presentedUserPrompt);
     for (const check of pageViewChecks) void check();
     completeDesktopDecision();
     const markedTurns = markedContinuationTurns();
@@ -10952,7 +11033,9 @@
     desktopInputBusy = true;
     let decision = null;
     let sent = false;
+    let acknowledged = false;
     let draft = null;
+    let authoredDraft = null;
     let claimedSilence = null;
     const writableComposer = () => CLF_DOM.composerVisible() && CLF_DOM.composerWritable() && CLF_DOM.composer();
     try {
@@ -10978,6 +11061,7 @@
       const input = reply?.data?.input;
       if (input?.silenceBoundary || input?.completedTurnId) { claimedSilence = input; sourceQuiet = true; }
       if (!input || !onTarget()) return false;
+      authoredDraft = typeof input.draftText === 'string' ? input.draftText : CLF_DOM.userPromptText(input.text);
       const fail = async (error) => { await ask({ type: 'desktop_input', id: input.id, owner: input.owner, fail: true, error }); return false; };
       // ChatGPT restores its shared home draft even in a newly opened input tab.
       // This exact claimed bootstrap owns replacement text; existing chats and
@@ -11038,6 +11122,7 @@
       const previousUserId = CLF_DOM.messages().filter(row => row.role === 'user').at(-1)?.id;
       rememberUserSend();
       const submittedText = sendText(CLF_DOM.composer()?.textContent);
+      if (userSendReceipt?.text === submittedText) userSendReceipt.preparedText = input.text;
       if (input.purpose === 'decision') {
         decision = { id: input.id, owner: input.owner, messageId: null, text: input.text, temporary, onTarget: sendingTarget, conversationId: null, epoch: forEpoch, response: '', publishing: false };
         desktopDecision = decision;
@@ -11057,6 +11142,10 @@
         if ((!conversation && !temporary) || (target && !onTarget())) return false;
         const users = CLF_DOM.messages().filter(row => row.role === 'user');
         if ((!target && users.length !== 1) || users.at(-1)?.id !== user.id || user.id === previousUserId || !matchesSubmittedUser(user, submittedText)) return false;
+        if (CLF_DOM.userPromptText(input.text.trimStart()) !== null) {
+          submittedUserText.set(user.id, { text: input.text, conversationId: conversation || null, epoch });
+          if (submittedUserText.size > 100) submittedUserText.delete(submittedUserText.keys().next().value);
+        }
         // Freeze only identity while native Send still holds the proven row. React
         // may replace it before this async operation resumes; do not rediscover it.
         receipt = { conversation, user: { id: user.id } };
@@ -11076,9 +11165,9 @@
         completeDesktopDecision();
       }
       // The claim remains inert if this ACK is lost; no duplicate send after a reload.
-      const acknowledged = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation, messageId: receipt.user?.id, owner: input.owner, lifetime: input.lifetime, ack: true });
-      const accepted = acknowledged?.data?.ok === true;
-      if (accepted && deliveredConversation && receipt.user?.id && sendingTarget() &&
+      const acknowledgement = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation, messageId: receipt.user?.id, owner: input.owner, lifetime: input.lifetime, ack: true });
+      acknowledged = acknowledgement?.data?.ok === true;
+      if (acknowledged && deliveredConversation && receipt.user?.id && sendingTarget() &&
           userSendReceipt === witnessedSendReceipt && witnessedSendReceipt?.text === submittedText &&
           (witnessedSendReceipt.conversationId === target ||
             (!target && witnessedSendReceipt.conversationId === deliveredConversation)) &&
@@ -11089,17 +11178,23 @@
       // Stop/composer-clear may precede the exact user row. This receipt, not that early
       // native acceptance, owns retirement of the still-untouched prepared draft. A
       // rejected/cancelled claim, trusted edit, replacement editor or route preserves it.
-      if (accepted && sendingTarget() && CLF_DOM.messages().filter(row => row.role === 'user').at(-1)?.id === receipt.user.id) {
+      if (acknowledged && sendingTarget() && CLF_DOM.messages().filter(row => row.role === 'user').at(-1)?.id === receipt.user.id) {
         try { await draft.clear(); } catch { /* Unprovable native cleanup preserves the draft. */ }
       }
-      return accepted;
+      return acknowledged;
     } finally {
       if (claimedSilence && !sendAttempted) {
         await ask({ type: 'desktop_input', id: claimedSilence.id, owner: claimedSilence.owner, fail: true,
           error: 'After-turn pickup was withdrawn before Send.' }).catch(() => undefined);
       }
       if (draft) {
-        try { if (!sendAttempted) await draft.clear(); }
+        try {
+          if (!sendAttempted) await draft.clear();
+          // Ambiguous delivery remains ambiguous: do not ACK or resend it. But an
+          // exact untouched prepared draft must never expose the private transport
+          // frame in ChatGPT's editor. Retain only the main-owned authored text.
+          else if (!acknowledged && authoredDraft !== null) await draft.restoreAuthored(authoredDraft);
+        }
         catch { /* Unprovable cleanup preserves the draft; never keep the input slot busy. */ }
         finally { draft.dispose(); }
       }

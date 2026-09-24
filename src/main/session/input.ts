@@ -98,6 +98,9 @@ const entrySchema = inputArgs.extend({
   queueOrder: z.number().int().nonnegative().optional()
 });
 export type InputEntry = z.infer<typeof entrySchema>;
+/** Browser-only projection. `draftText` is the safe authored text to retain if a
+ * dispatched native send remains ambiguous; it is never persisted as delivery state. */
+export type BrowserInputClaim = InputEntry & { draftText: string };
 const STATE = 'session-input';
 const TOOL_INPUT_TEXT_BYTES = 128000;
 export const TOOL_INPUT_HEADER = '\n--- New instructions from the user ---\n';
@@ -1225,7 +1228,7 @@ export function pendingBrowserInputs(): Promise<Array<{ id: string; conversation
     return result;
   });
 }
-export function claimBrowserInput(id: string, owner: string, conversationId: string | null, requiresAuthorization = false): Promise<InputEntry | null> {
+export function claimBrowserInput(id: string, owner: string, conversationId: string | null, requiresAuthorization = false): Promise<BrowserInputClaim | null> {
   return serial(async () => {
     const current = await load();
     const entry = current.find((row) => row.id === id);
@@ -1296,7 +1299,15 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
     if (!requiresAuthorization && completedTurnId && entry.sessionId && conversationId)
       await consumeGoalReplyForInputNow(conversationId, entry.sessionId, completedTurnId);
     logInfo(`input ${id}: browser claimed after ${Math.max(0, Date.now() - entry.createdAt)} ms`);
-    return { ...combinedInput(claimed, companion), ...selection, text: claimed.deliveryText ?? claimed.text };
+    return {
+      ...combinedInput(claimed, companion),
+      ...selection,
+      text: claimed.deliveryText ?? claimed.text,
+      // The extension must never retain the prepared transport frame in ChatGPT's
+      // user-editable composer after an ambiguous click. Only a human-authored
+      // immediate input has a draft worth restoring.
+      draftText: manualInput(entry) ? entry.text : ''
+    };
   });
 }
 /** Initial provider binding uses the same reserved session as local admission. */

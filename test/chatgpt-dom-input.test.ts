@@ -11,7 +11,7 @@ interface DomApi {
   sendButton(): HTMLButtonElement | null;
   temporaryChatReady(): boolean;
   errors(): Array<{ text: string; recoverable: boolean; blocking?: boolean }>;
-  captureComposerDraft(text: string, current?: () => boolean): { current(): boolean; clear(): Promise<boolean>; dispose(): void; attachments(nodes: Element[]): void };
+  captureComposerDraft(text: string, current?: () => boolean): { current(): boolean; clear(): Promise<boolean>; restoreAuthored(text: string): Promise<boolean>; dispose(): void; attachments(nodes: Element[]): void };
   visibleModelSelection(): { model: string; reasoningEffort?: string } | null;
   hasComposerAttachments(): boolean;
   stopGeneration(current: () => boolean): boolean;
@@ -531,6 +531,37 @@ describe('native image readiness', () => {
     expect(await api.uploadImages([{ name: 'app.webp', dataUrl: 'data:image/webp;base64,YQ==' }], () => true, draft)).toBe(true);
     expect(await draft.clear()).toBe(true);
     expect(tile.isConnected).toBe(false); expect(box.textContent).toBe(''); draft.dispose();
+  });
+  it('replaces an exact prepared draft with authored text after ambiguous delivery', async () => {
+    const prepared = '[[COS_CONTEXT:17]]\nInternal guidance\n[[/COS_CONTEXT]]\n\nAuthored request';
+    box.textContent = prepared;
+    const tile = document.createElement('button');
+    tile.type = 'button'; tile.setAttribute('aria-label', 'Remove file 1: evidence.txt');
+    tile.addEventListener('click', () => tile.remove());
+    document.querySelector('form')!.append(tile);
+    document.execCommand = (command, _ui, value) => {
+      if (command !== 'insertHTML') return false;
+      const selection = document.getSelection();
+      if (!selection?.rangeCount) return false;
+      const range = selection.getRangeAt(0); range.deleteContents();
+      const template = document.createElement('template'); template.innerHTML = value || '';
+      range.insertNode(template.content); return true;
+    };
+    const draft = api.captureComposerDraft(prepared);
+    draft.attachments([tile]);
+    expect(await draft.restoreAuthored('Authored request')).toBe(true);
+    expect(box.textContent).toBe('Authored request');
+    expect(tile.isConnected).toBe(false);
+    draft.dispose();
+  });
+  it('does not replace a prepared draft after its exact editor lease is lost', async () => {
+    const draft = api.captureComposerDraft('Exact app prompt');
+    box.textContent = 'User changed this draft';
+    const edit = vi.fn(); document.execCommand = edit;
+    expect(await draft.restoreAuthored('Authored request')).toBe(false);
+    expect(box.textContent).toBe('User changed this draft');
+    expect(edit).not.toHaveBeenCalled();
+    draft.dispose();
   });
   it.each(['edited text', 'extra attachment', 'replacement attachment', 'navigation'])('preserves the entire draft after %s breaks exact ownership', async reason => {
     const input = upload();

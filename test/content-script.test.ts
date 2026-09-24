@@ -950,6 +950,150 @@ describe('desktop input delivery and helper ownership', () => {
     ]);
   });
 
+  it('ACKs a fresh input when its exact user row mounts before the route is assigned', async () => {
+    const longText = 'Large first request with exact identity. '.repeat(180);
+    live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
+      desktop_input: message => ({ ok: true, data: message.authorize ? { ok: true } : message.ack ? { ok: true } : {
+        input: claimed({ text: longText, draftText: longText })
+      } })
+    });
+    let clicked!: () => void;
+    const sent = new Promise<void>(resolve => { clicked = resolve; });
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+      userTurn(live!.document, 'early-fresh-user', longText);
+      live!.document.querySelector('#prompt-textarea')!.textContent = '';
+      clicked();
+    });
+    const delivery = live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null });
+    await sent;
+    expect(live.sent.some(message => message.ack)).toBe(false);
+    live.dom.reconfigure({ url: `https://chatgpt.com/c/${chatA}` });
+    live.hook.observe();
+    expect(await delivery).toEqual({ ok: true });
+    expect(live.sent.filter(message => message.ack)).toEqual([
+      expect.objectContaining({ conversationId: chatA, messageId: 'm-early-fresh-user' })
+    ]);
+  });
+
+  it('ACKs the exact framed first input after reversible provider Markdown serialization', async () => {
+    const url = 'https://www.w3.org/WAI/ARIA/apg/patterns/accordion/examples/accordion/';
+    const authored = `Run the browser test at ${url}`;
+    const prepared = prependUserPrompt(authored, '# Private guidance\n- Preserve **literal** `code`.');
+    const providerReadback = prepared
+      .replace('# Private guidance', '\\# Private guidance')
+      .replace('- Preserve **literal** `code`.', '\\- Preserve \\*\\*literal\\*\\* `code`.')
+      .replace(url, `[${url}](${url})`);
+    live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
+      desktop_input: message => ({ ok: true, data: message.authorize ? { ok: true } : message.ack ? { ok: true } : {
+        input: claimed({ text: prepared, draftText: authored })
+      } })
+    });
+    let user!: HTMLElement;
+    let clicked!: () => void;
+    const sent = new Promise<void>(resolve => { clicked = resolve; });
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+      user = userTurn(live!.document, 'serialized-fresh-user', providerReadback, { sent: false });
+      live!.document.querySelector('#prompt-textarea')!.textContent = '';
+      live!.hook.observe();
+      clicked();
+    });
+    const delivery = live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null });
+    await sent;
+    live.dom.reconfigure({ url: `https://chatgpt.com/c/${chatA}` });
+    live.hook.observe();
+    expect(live.sent.some(message => message.ack)).toBe(false);
+    expect(await delivery).toEqual({ ok: true });
+    expect(live.sent.filter(message => message.ack)).toEqual([
+      expect.objectContaining({ conversationId: chatA, messageId: 'm-serialized-fresh-user' })
+    ]);
+    live.hook.observe(); await live.hook.flush();
+    expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe(authored);
+    const recorded = emitted(live.sent, 'user_message').filter(row => row.event.messageId === 'm-serialized-fresh-user');
+    expect(userPromptText(recorded.at(-1)?.event.text as string)).toBe(authored);
+  });
+
+  it('does not treat an arbitrary changed Markdown link as provider receipt evidence', async () => {
+    const url = 'https://example.com/source';
+    const authored = `Open ${url}`;
+    const prepared = prependUserPrompt(authored, 'Private guidance');
+    const changed = prepared.replace(url, `[${url}](https://example.com/other)`);
+    live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
+      desktop_input: message => ({ ok: true, data: message.authorize ? { ok: true } : message.ack ? { ok: true } : {
+        input: claimed({ text: prepared, draftText: authored })
+      } })
+    });
+    let clicked!: () => void;
+    const sent = new Promise<void>(resolve => { clicked = resolve; });
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+      live!.dom.reconfigure({ url: `https://chatgpt.com/c/${chatA}` });
+      userTurn(live!.document, 'changed-link-user', changed);
+      live!.document.querySelector('#prompt-textarea')!.textContent = '';
+      clicked();
+    });
+    const delivery = live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null });
+    await sent;
+    expect(live.sent.some(message => message.ack)).toBe(false);
+    live.dom.reconfigure({ url: `https://chatgpt.com/c/${chatB}` });
+    live.hook.observe();
+    expect(await delivery).toEqual({ ok: false });
+    expect(live.sent.some(message => message.ack)).toBe(false);
+  });
+
+  it('recovers only an escaped private prefix from canonical history and preserves authored escapes', async () => {
+    const authored = 'Keep C:\\_work, the literal \\* glob, and [https://example.com](https://example.com).';
+    const prepared = prependUserPrompt(authored, '# Private guidance\n- Preserve **literal** `code`.');
+    const providerReadback = prepared
+      .replace('# Private guidance', '\\# Private guidance')
+      .replace('- Preserve **literal** `code`.', '\\- Preserve \\*\\*literal\\*\\* `code`.');
+    live = await harness(`https://chatgpt.com/c/${chatA}`);
+    const user = userTurn(live.document, 'historical-serialized-user', providerReadback, { sent: false });
+    await bindFiberTurns([{ section: user, turn: { turnId: 'historical-serialized-user', conversationId: chatA,
+      messages: [{ role: 'user', stable: true, messageId: 'm-historical-serialized-user',
+        rawMessageId: 'm-historical-serialized-user', rawText: providerReadback }] } }]);
+
+    live.hook.observe(); await live.hook.flush();
+
+    expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe(authored);
+    const recorded = emitted(live.sent, 'user_message').filter(row => row.event.messageId === 'm-historical-serialized-user');
+    expect(userPromptText(recorded.at(-1)?.event.text as string)).toBe(authored);
+  });
+
+  it('quarantines an incomplete canonical private frame instead of publishing its prefix', async () => {
+    const prepared = prependUserPrompt('Visible request', 'Private guidance that must stay hidden.');
+    const damaged = prepared.replace('Private guidance', 'Private guidanc');
+    live = await harness(`https://chatgpt.com/c/${chatA}`);
+    const user = userTurn(live.document, 'damaged-canonical-user', damaged, { sent: false });
+    await bindFiberTurns([{ section: user, turn: { turnId: 'damaged-canonical-user', conversationId: chatA,
+      messages: [{ role: 'user', stable: true, messageId: 'm-damaged-canonical-user',
+        rawMessageId: 'm-damaged-canonical-user', rawText: damaged }] } }]);
+
+    live.hook.observe(); await live.hook.flush();
+
+    expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe('…');
+    expect(user.querySelector('[data-clf-prompt-hidden]')?.textContent).toBe(damaged);
+    expect(emitted(live.sent, 'user_message').filter(row => row.event.messageId === 'm-damaged-canonical-user')).toEqual([]);
+  });
+
+  it('retains only authored text when an exact native receipt is rejected by the app', async () => {
+    const authored = 'A large first request from the user';
+    const prepared = prependUserPrompt(authored, 'Private system and project context');
+    live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
+      desktop_input: message => ({ ok: true, data: message.authorize ? { ok: true } : message.ack ? { ok: false } : {
+        input: claimed({ text: prepared, draftText: authored })
+      } })
+    });
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+      live!.dom.reconfigure({ url: `https://chatgpt.com/c/${chatA}` });
+      userTurn(live!.document, 'rejected-receipt-user', prepared);
+      // ChatGPT may restore the submitted text while receipt ownership settles.
+      live!.hook.observe();
+    });
+    expect(await live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null })).toEqual({ ok: false });
+    expect(composerText(live.document)).toBe(authored);
+    expect(composerText(live.document)).not.toContain('Private system');
+    expect(live.sent.filter(message => message.ack)).toHaveLength(1);
+  });
+
   it.each([false, true])('carries a reserved opening into route binding before activity (project: %s)', async project => {
     live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
       events: () => ({ ok: false }),

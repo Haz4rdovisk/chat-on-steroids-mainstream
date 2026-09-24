@@ -2196,9 +2196,10 @@ function paintInputReceipt(row: HTMLElement, item: ReturnType<typeof timelineIte
   const receipt = row.querySelector<HTMLElement>('.input-receipt');
   if (!receipt) return;
   if (item.event.inputId) receipt.dataset.inputId = item.event.inputId;
-  const feedback = item.event.inputId ? thinkingFeedback.get(item.event.inputId) : undefined;
-  const stagingConfirmation = item.event.inputDelivery === 'confirmed' && !!feedback;
-  receipt.hidden = hasLaterModelActivity(item.event.time) && !stagingConfirmation;
+  // A confirmed receipt is durable message history, not transient thinking UI. Keep the
+  // check visible after the response starts; only the provisional "offered" clock may retire
+  // once later model activity proves that the turn moved on.
+  receipt.hidden = item.event.inputDelivery === 'offered' && hasLaterModelActivity(item.event.time);
   if (!receipt.hidden && item.event.inputDelivery === 'confirmed' && item.event.inputId) confirmThinkingFeedback(item.event.inputId);
   receipt.parentElement?.classList.toggle('has-input-receipt', !receipt.hidden);
 }
@@ -3993,11 +3994,6 @@ function clearPresentedThinkingFeedback(): void {
   const feedback = currentThinkingFeedback();
   if (!feedback?.confirmed) return;
   clearThinkingFeedback(feedback.inputId, false);
-  for (const receipt of $('timeline').querySelectorAll<HTMLElement>('.input-receipt')) {
-    if (receipt.dataset.inputId !== feedback.inputId) continue;
-    receipt.hidden = true;
-    receipt.parentElement?.classList.remove('has-input-receipt');
-  }
   paintPendingInputs();
 }
 

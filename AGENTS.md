@@ -1022,6 +1022,11 @@ exact final marker. A later observation must not classify its own answer as old 
 An exact accepted fresh-chat receipt remains valid when native submit promotes its null
 conversation to the delivered conversation. The same receipt, message, epoch and send lifetime
 must still agree; a second navigation or replaced receipt cannot inherit that acceptance.
+A fresh native user row may mount before that first concrete route. Route reconciliation must
+re-run the existing receipt observer so the same row and route can agree; it never invents a
+receipt or clicks Send again. If an authorized click remains ambiguous, retain at most the
+main-owned authored draft under the exact untouched composer lease. Never expose the prepared
+transport frame or preserve staged attachments as a user-editable retry.
 While an exact send receipt still has a bounded evidence reader, the existing observation also
 requests canonical MAIN-world text even after native generation stops. Rendered Markdown can
 remove submitted bytes; recognizing the generation must not be a prerequisite for reading the

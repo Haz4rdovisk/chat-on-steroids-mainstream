@@ -1118,7 +1118,7 @@ it('shows the real response immediately when its confirmation arrives in the sam
   expect(receipt).not.toBeNull();
   expect(app.w.document.querySelector('.assistant-message-content')!.textContent?.trimEnd()).toBe('Answer starts');
   expect(app.w.document.querySelector('#inputQueue .assistant-thinking')).toBeNull();
-  expect(receipt.hidden).toBe(true);
+  expect(receipt.hidden).toBe(false);
 });
 
 it('retires thinking feedback on an error and its bounded presentation timeout', async () => {
@@ -4207,14 +4207,14 @@ it.each(['older', 'newer'])('does not apply a %s-page response or scroll after s
   expect(pane.scrollTop).toBe(73);
 });
 
-it('clears a delivered check when later model activity arrives without a timer', async () => {
+it('keeps a confirmed delivery check after later model activity arrives', async () => {
   const message: SessionEvent = { seq: 1, time: T0, source: 'app', kind: 'user_message', messageId: 'input:receipt', inputId: 'receipt', inputDelivery: 'confirmed', message: text('Continue') };
   const app = await boot([message]);
   const receipt = app.w.document.querySelector('.input-receipt') as HTMLElement;
   expect(receipt.hidden).toBe(false);
   await app.append([toolCall(2, 'next-tool')]);
   expect(app.w.document.querySelector('.input-receipt')).toBe(receipt);
-  expect(receipt.hidden).toBe(true);
+  expect(receipt.hidden).toBe(false);
 });
 
 
