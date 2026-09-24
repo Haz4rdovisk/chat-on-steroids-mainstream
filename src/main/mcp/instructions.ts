@@ -104,6 +104,9 @@ function coreInstructions(ctx: ToolContext, platform: NodeJS.Platform, skills: s
     'read batches paths, lists folders, expands globs and returns numbered text. Read whole files for orientation; otherwise use known regions. A start_line/end_line range applies to every file the call reads.',
   );
   if (caps.read) lines.push('view_image inspects a local image. Use it when visual evidence matters.');
+  if ((ctx.exposedCaps ?? caps).browserUse) lines.push(
+    'browser controls the separate in-app Browser Use workspace for ordinary websites. It never addresses the app-owned ChatGPT transport browser. Begin with a top-level list call. If there is no active tab, use top-level open. New origins return approval_required immediately without navigating; wait for the user to approve the exact origin in the Browser panel, then retry the supplied navigation at top level. Use select to change tabs explicitly; state observes a named tab without selecting it. After approval, start each short Core exec burst with state compact:true on the selected tab; use the returned tabId/snapshotId only inside that burst, never across exec calls. Reobserve compactly after every click/type/key/scroll. Inspect each structured status: target_lost means the page changed, so observe again instead of opening another tab. Keep full-text state outside exec when semantic reading is needed. done ends only the agent-driving mission and never closes or reopens the panel or tabs. Avoid top-level return in exec JavaScript.'
+  );
   if (caps.command) {
     lines.push(
       'Use rg or rg --files for searches; if unavailable, use the next best tool. Prefer rg -g \'*.ts\' src over shell globs.',

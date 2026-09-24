@@ -7,6 +7,7 @@ import { marked, Marked } from 'marked';
 import { safeExternalLink } from '../shared/external-link.js';
 import { createAgentPanel } from './agent-panel.js';
 import { createFilePanel } from './file-panel.js';
+import { createBrowserPanel } from './browser-panel.js';
 import { renderAgentPlan } from './agent-plan.js';
 import { userPromptText } from '../shared/user-prompt.js';
 import { messageReaction, withoutMessageReaction } from '../shared/message-reaction.js';
@@ -176,6 +177,7 @@ let agentPanel: ReturnType<typeof createAgentPanel> | null = null;
 let selectedSwarm: { sessionId: string; state: SwarmState } | null = null;
 let selectedSwarmGeneration = 0;
 let filePanel: ReturnType<typeof createFilePanel> | null = null;
+let browserPanel: ReturnType<typeof createBrowserPanel> | null = null;
 const expandedWorkers = new Set<string>();
 const inputDrafts = new Map<string, string>();
 const newChatTasks = new Map<string, { objective: string; automation: string; loopDelivery: string }>();
@@ -3888,6 +3890,7 @@ export function chatVisible(next: boolean): void {
   visible = next;
   if (next) void refreshAll();
   else {
+    void browserPanel?.hide();
     window.clearTimeout(toolActivityTimer);
     window.clearTimeout(durationTimer);
     toolActivityTimer = undefined;
@@ -4488,6 +4491,7 @@ function timelineOwnsSharedScroll(): boolean {
 }
 
 function showView(name: string): void {
+  if (name === 'settings') void browserPanel?.hide();
   const body = $('chatBody');
   chatViewScroll.set(currentChatView, body.scrollTop);
   $('composer').hidden = name === 'settings';
@@ -4586,11 +4590,15 @@ export function initChat(next: Deps): void {
   agentToggle.append(icon('i-agent'));
   agentToggle.id = 'agentPanelToggle'; agentToggle.type = 'button'; agentToggle.hidden = true;
   ui(agentToggle, 'aria-label', () => t("Toggle sub-agent side panel")); agentToggle.setAttribute('aria-expanded', 'false');
-  $('headerActions').prepend(fileToggle, agentToggle);
+  const browserToggle = el('button', 'btn btn-icon') as HTMLButtonElement;
+  browserToggle.id = 'browserUseToggle'; browserToggle.type = 'button';
+  browserToggle.append(icon('i-globe'));
+  ui(browserToggle, 'aria-label', () => t('Toggle Browser side panel')); browserToggle.setAttribute('aria-expanded', 'false');
+  $('headerActions').prepend(fileToggle, browserToggle, agentToggle);
   const agentToolGroups = new Map<string, HTMLDetailsElement>();
   agentPanel = createAgentPanel({
     host: document.querySelector<HTMLElement>('[data-panel="chat"]')!, toggle: agentToggle,
-    onShow: () => filePanel?.hide(true),
+    onShow: () => { filePanel?.hide(true); void browserPanel?.hide(); },
     load: id => run(api.getSession(id, { limit: 160 })), openMain: selectSession,
     render: (source, id, current) => {
       let boundary = '';
@@ -4774,7 +4782,7 @@ export function initChat(next: Deps): void {
   };
   filePanel = createFilePanel({
     host: document.querySelector<HTMLElement>('[data-panel="chat"]')!, toggle: fileToggle,
-    onShow: () => agentPanel?.hide(true),
+    onShow: () => { agentPanel?.hide(true); void browserPanel?.hide(); },
     onRequestGitReview: projectId => {
       if (selectedLocalProject()?.id !== projectId) return;
       const input = $<HTMLTextAreaElement>('chatInput');
@@ -4795,6 +4803,11 @@ export function initChat(next: Deps): void {
       const owner = composerDraftOwner();
       return attachment => appendImages(owner, [attachment]);
     }
+  });
+  browserPanel = createBrowserPanel({
+    host: document.querySelector<HTMLElement>('[data-panel="chat"]')!,
+    toggle: browserToggle,
+    onShow: () => { agentPanel?.hide(true); filePanel?.hide(true); }
   });
   filePanel.update(selectedLocalProject());
   workspaceTerminal = createWorkspaceTerminal();

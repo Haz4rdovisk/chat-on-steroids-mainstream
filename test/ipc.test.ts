@@ -11,7 +11,9 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 
 type Handler = (event: unknown, payload: unknown) => Promise<unknown>;
+type Listener = (event: { returnValue?: unknown }, payload: unknown) => void;
 const handlers = new Map<string, Handler>();
+const listeners = new Map<string, Listener>();
 
 const petIpcMocks = vi.hoisted(() => ({
   setEnabled: vi.fn((id: string, enabled: boolean) => ({ pets: [{ id, enabled }] })),
@@ -27,7 +29,9 @@ const githubSkillIpcMocks = vi.hoisted(() => ({
 vi.mock('electron', () => ({
   ipcMain: {
     handle: (channel: string, handler: Handler) => handlers.set(channel, handler),
-    removeHandler: (channel: string) => handlers.delete(channel)
+    removeHandler: (channel: string) => handlers.delete(channel),
+    on: (channel: string, listener: Listener) => listeners.set(channel, listener),
+    removeListener: (channel: string) => listeners.delete(channel)
   },
   BrowserWindow: class {},
   clipboard: { readText: () => '', writeText: () => undefined },
@@ -540,6 +544,14 @@ beforeEach(async () => {
     sessions: { ...defaultConfig().sessions, record: true },
     multiAgent: { enabled: true, maxWorkers: 3, allowUnattributedCalls: false, recoverAgentTabs: true }
   });
+});
+
+it('keeps Browser Use geometry on its dedicated IPC channels', async () => {
+  expect(await handlers.get('browserUse:panel')!(null, { action: 'query' })).toMatchObject({ ok: true });
+  expect(await handlers.get('browserUse:panel')!(null, {
+    action: 'layout',
+    bounds: { x: 0, y: 0, width: 480, height: 720 }
+  })).toMatchObject({ ok: false });
 });
 
 it('shows the desktop overlay when a pet is explicitly enabled', async () => {

@@ -239,6 +239,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Desktop Pets | `src/main/{pet-library,pet-overlay}.ts`, `src/shared/{pets,pet-activity}.ts`, `src/preload/pet-overlay.ts`, `src/renderer/{pet-overlay,pet-machine,pet-choreography,pets,pet}.ts`: package validation, overlay host, task projection, animation and library controls. |
 | Native Desktop | `src/main/computer/{index,helper,browser-chords,windows-api,windows-capture,windows-apps,windows-keys}.ts`, `src/shared/windows-computer.ts`, `mcp/tools-desktop-{windows,macos}.ts`, `native/macos-desktop-helper/*`, `native/macos-desktop-addon/*`. |
 | Direct browser control | `src/main/browser-control.ts`, `mcp/tools-browser.ts`, `src/shared/browser-control.ts`, `extension/browser-control{,-page}.js`: short-lived RPCs, session-owned debugger tabs, bounded DOM/diagnostics and background input. |
+| Browser Use | `src/main/browser-use.ts`, `mcp/browser-tool.ts`, `src/shared/browser-use.ts`, `src/renderer/{browser-panel,browser-tab-strip}.ts`: isolated in-app web session, consent, snapshots, model input and native panel. It has no Internal Chromium, bridge, recorder or companion-extension authority. |
 | Delivery/build | `src/main/{update,extension-path,version,logger,durable}.ts`, `electron.vite.config.ts`, `electron-builder.yml`, `scripts/*`, `.github/workflows/*`, `vitest.config.ts`. |
 
 ### One durable fact, one authoritative owner
@@ -331,7 +332,7 @@ still checks live policy. Schema visibility is never the security boundary.
 
 | Surface | Advertised operations under current eligibility |
 | --- | --- |
-| Core — `chat-on-steroids-core` | `read`, `view_image`, `find` when command execution is off, `apply_patch`, `exec_command`/`write_stdin`, `update_plan`, `agents`, `session_finish`, code-mode `exec`. |
+| Core — `chat-on-steroids-core` | `read`, `view_image`, `find` when command execution is off, `apply_patch`, `exec_command`/`write_stdin`, isolated `browser` when Browser Use is enabled, `update_plan`, `agents`, `session_finish`, code-mode `exec`. |
 | Desktop — `chat-on-steroids-desktop` | All Chromium extension hosts: `browser_tabs`, `browser_snapshot`, `browser_screenshot`, `browser_console`, `browser_network`, `browser_navigate`, `browser_action`, `browser_evaluate`. Windows additionally exposes 13 Window2 operations, clipboard and `exec` with `sky`; macOS adds `observe`/`computer`. Surface `exec` composes browser tools too. |
 | Plugins — `chat-on-steroids-plugins` | Enabled external tools with their upstream names and schemas, plus code-mode `exec` when that composition name is available. |
 
@@ -2681,6 +2682,44 @@ Current persistence/publication exceptions are in §21.
 Dark is the default theme. Theme selection belongs in Appearance settings; the main header
 has no light/dark shortcut. Files and worker-panel controls attach to the header independently
 of appearance controls.
+
+### Browser Use
+
+Browser Use is an ordinary, isolated agent tool and right-side workspace panel. It owns the
+separate persistent `persist:cos-web` session and only accepts HTTP(S) documents. It does not
+load the companion extension, participate in ChatGPT delivery/recording/recovery, reuse the
+bridge, or import the Internal Chromium subsystem. In the Internal variant, `internal-browser.ts`
+and Browser Use remain independent owners with different partitions and no cross-imports.
+
+The main-process owner holds tabs, active-tab identity, origin consent, navigation/layout epochs,
+snapshots and native `WebContentsView` geometry. A first agent request for an unapproved exact
+origin publishes one panel decision and returns `approval_required` immediately, before network
+navigation. Approval grants trust only; the agent must explicitly retry the returned navigation.
+Denial or expiry retires a still-unused provisional blank tab. No MCP or code-mode call waits on
+human consent. Renderer chrome projects that state through the
+fixed Browser Use IPC allowlist. Files, Sub-agents and Browser Use are mutually exclusive views
+of the same right work slot. Hiding the panel does not retire the browser session or grant new
+navigation authority.
+
+Agent input follows `inspect → act → inspect`. Tab selection is an explicit action; observing a
+named background tab cannot change the active tab. A loading state is returned before snapshot
+work, and `wait` listens to Chromium's loading boundary within its explicit bound or a bounded
+one-second default rather than sleeping and guessing. `list` and `state` are passive: they refresh
+an existing mission but
+cannot start a new one after `done`; an explicit control action starts mission visuals. A state
+observation binds refs, semantic ARIA state and viewport CSS coordinates to the exact tab,
+top-level document, authorized origin and panel size. Its document commands abort on an epoch
+change. Prefer compact observations for semantic target discovery and pre-action revalidation;
+request full page text only when the task needs it. Document commands have their own bound below
+code-mode's outer deadline, so replaced pages cannot leave
+a detached observation running. Navigation, resize or one completed action invalidates that
+snapshot. Pointer actions accept an observed element ref or bounded viewport coordinates.
+Drag/swipe/long-press run as one cancellable gesture;
+mouse buttons and touch contacts receive best-effort release/cancel if navigation, replacement
+input or teardown interrupts the gesture. Browser Use never exposes arbitrary CDP, Electron or
+main-process methods to the model. Recoverable approval and changed-document outcomes are
+structured non-errors with an explicit next action; missing tabs and policy violations remain
+refusals. `done` ends only agent mission visuals and preserves the panel and tabs.
 
 ### Renderer and IPC
 

@@ -82,6 +82,7 @@ import { trayGuidArgsForPlatform, trayImageSpec } from './tray-image.js';
 import { browserWindowIconPath } from './window-icon.js';
 import { editContextMenuTemplate } from './edit-context-menu.js';
 import { attachViewMenuWindow, prewarmViewMenu, shutdownViewMenu } from './view-menu.js';
+import { attachBrowserUseWindow, isBrowserUseSession, shutdownBrowserUse } from './browser-use.js';
 
 /** Durable state file holding the multi-agent run. Hashes only, never credentials. */
 const SWARM_STATE = 'swarm';
@@ -133,6 +134,7 @@ function createWindow(): void {
     }
   });
 
+  attachBrowserUseWindow(window);
   if (process.platform === 'win32') window.removeMenu();
   attachViewMenuWindow(window);
 
@@ -517,7 +519,7 @@ app.on('will-quit', (event) => {
       {
         name: 'process cleanup',
         budgetMs: 15_000,
-        run: () => [unifiedExecManager.terminateAllProcesses(), stopComputerHelper(), shutdownPetOverlay(), shutdownViewMenu(), pluginManager.close()]
+        run: () => [unifiedExecManager.terminateAllProcesses(), stopComputerHelper(), shutdownBrowserUse(), shutdownPetOverlay(), shutdownViewMenu(), pluginManager.close()]
       },
       // Phase 3: recorder work can enqueue both session projections and named durable state.
       { name: 'recorder flush', budgetMs: 10_000, run: () => [flushRecorder()] },
@@ -550,6 +552,9 @@ app.on('will-quit', (event) => {
 // Belt and braces: no web contents anywhere in this app may open a window or
 // navigate. External links go through the vetted allowlist in ipc.ts instead.
 app.on('web-contents-created', (_event, contents) => {
+  // Browser Use owns one isolated persistent Session for ordinary remote websites. It is not
+  // the app shell and does not inherit ChatGPT transport/recorder authority.
+  if (isBrowserUseSession(contents.session)) return;
   contents.setWindowOpenHandler(() => ({ action: 'deny' }));
   contents.on('will-navigate', (event) => event.preventDefault());
   contents.on('will-redirect', (event) => event.preventDefault());

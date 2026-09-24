@@ -3311,6 +3311,15 @@ describe('tool summaries', () => {
     ).toMatchObject({ title: 'Started npm run verify', metric: 'started', tone: 'neutral' });
   });
 
+  it('names Browser Use actions instead of presenting recoverable browser state as a generic refusal', () => {
+    expect(summarize('browser', { action: 'state', tab_id: 7 })).toMatchObject({
+      title: 'Observed a Browser Use tab',
+      tone: 'neutral'
+    });
+    expect(summarize('browser', { action: 'select', tab_id: 7 }).title).toBe('Selected a Browser Use tab');
+    expect(summarize('browser', { action: 'done' }).title).toBe('Finished the Browser Use mission');
+  });
+
   it('says which way a session was interrupted', () => {
     expect(summarize('write_stdin', { session_id: 'p1', signal: 'kill' })).toMatchObject({
       title: 'Stopped session p1',

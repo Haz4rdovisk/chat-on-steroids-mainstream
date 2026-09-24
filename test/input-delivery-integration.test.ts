@@ -14,7 +14,7 @@ import * as browserStartup from '../src/main/browser-startup.js';
 type Handler = (event: unknown, payload: unknown) => Promise<any>;
 const handlers = new Map<string, Handler>();
 vi.mock('electron', () => ({
-  ipcMain: { handle: (name: string, handler: Handler) => handlers.set(name, handler), removeHandler: (name: string) => handlers.delete(name) },
+  ipcMain: { handle: (name: string, handler: Handler) => handlers.set(name, handler), removeHandler: (name: string) => handlers.delete(name), on: vi.fn() },
   BrowserWindow: class {}, clipboard: {}, dialog: {}, shell: {}, nativeTheme: { themeSource: 'system' },
   app: { on: vi.fn(), getPath: () => '', getVersion: () => '0.0.0', getAppPath: () => process.cwd(), isPackaged: false },
   safeStorage: {

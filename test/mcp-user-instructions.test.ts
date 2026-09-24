@@ -129,6 +129,18 @@ describe('the user’s own connector instructions', () => {
     expect(withoutCommands).not.toContain('exec_command runs');
   });
 
+  it('keeps Browser Use consent outside bounded code-mode bursts', () => {
+    const text = serverInstructions({ ...ctx, caps: { ...ctx.caps, browserUse: true } }, 'core', 'win32');
+    expect(text).toContain('Begin with a top-level list call');
+    expect(text).toContain('If there is no active tab, use top-level open');
+    expect(text).toContain('approval_required immediately without navigating');
+    expect(text).toContain('retry the supplied navigation at top level');
+    expect(text).toContain('Use select to change tabs explicitly');
+    expect(text).toContain('target_lost means the page changed');
+    expect(text).toContain('done ends only the agent-driving mission');
+    expect(text).not.toContain('Start each short Core exec burst with state compact:true');
+  });
+
   it('adds nothing at all when empty, not even the heading', () => {
     expect(defaultConfig().mcp.instructions).toBe('');
     for (const surface of ['core', 'desktop'] as const) {

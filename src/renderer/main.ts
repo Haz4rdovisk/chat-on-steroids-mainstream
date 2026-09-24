@@ -89,6 +89,13 @@ const GROUPS: Group[] = [
     caps: ['create', 'edit', 'move', 'deleteFile']
   },
   {
+    id: 'browser',
+    title: "Browse the web",
+    icon: 'i-globe',
+    blurb: "Open and interact with websites in the isolated in-app browser.",
+    caps: ['browserUse']
+  },
+  {
     id: 'desktop',
     title: "Browser and desktop control",
     icon: 'i-monitor',

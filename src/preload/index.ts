@@ -3,6 +3,7 @@ import type { ChatModelCatalog } from '../shared/chat-models.js';
 import type { GoalModel } from '../shared/goal-reasoning.js';
 import type { TaskProgress } from '../shared/task-progress.js';
 import type { BrowserPreferences } from '../shared/browser-preferences.js';
+import type { BrowserUseBounds, BrowserUseRequest, BrowserUseState } from '../shared/browser-use.js';
 import type { SessionControlsView } from '../main/bridge.js';
 import type { InputAttachment } from '../shared/input.js';
 import type { UsageOverview } from '../shared/usage.js';
@@ -241,6 +242,19 @@ const api = {
     return () => ipcRenderer.removeListener('chatModels:changed', wrapped);
   },
   getSessionControls: (id: string) => call<SessionControlsView>('sessions:controls', { id }),
+  browserUse: (request: BrowserUseRequest) => call<BrowserUseState>('browserUse:panel', request),
+  browserUseLayout: (bounds: BrowserUseBounds): void => ipcRenderer.send('browserUse:layout', bounds),
+  browserUseLayoutSync: (bounds: BrowserUseBounds): boolean => ipcRenderer.sendSync('browserUse:layoutSync', bounds) === true,
+  onBrowserUseShowRequested: (listener: () => void): (() => void) => {
+    const wrapped = (): void => listener();
+    ipcRenderer.on('browserUse:showRequested', wrapped);
+    return () => ipcRenderer.removeListener('browserUse:showRequested', wrapped);
+  },
+  onBrowserUseStateChanged: (listener: (state: BrowserUseState) => void): (() => void) => {
+    const wrapped = (_event: unknown, state: BrowserUseState): void => listener(state);
+    ipcRenderer.on('browserUse:stateChanged', wrapped);
+    return () => ipcRenderer.removeListener('browserUse:stateChanged', wrapped);
+  },
   setSessionAutomation: (id: string, automation: SessionControlsView['automation'], afterTurn?: boolean) => call<SessionControlsView>('sessions:automation', { id, automation, afterTurn }),
   setSessionObjective: (id: string, text: string, mode: 'goal' | 'loop') => call<SessionControlsView>('sessions:objective', { id, text, mode }),
   compactSession: (id: string) => call<SessionControlsView>('sessions:compact', { id }),

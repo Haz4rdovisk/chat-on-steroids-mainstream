@@ -642,7 +642,7 @@ describe('the window as a whole', () => {
 
   it('keeps right work-panel grid tracks interpolation-compatible with their closed state', () => {
     const closed = rule("[data-panel='chat']");
-    const open = rule("[data-panel='chat'].has-agent-panel,\n[data-panel='chat'].has-file-panel");
+    const open = rule("[data-panel='chat'].has-agent-panel,\n[data-panel='chat'].has-file-panel,\n[data-panel='chat'].has-browser-panel");
     expect(closed).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 0px)');
     expect(closed).toContain('transition: grid-template-columns 220ms cubic-bezier(.16, 1, .3, 1)');
     expect(open).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, var(--work-panel-width, 42%))');
@@ -683,6 +683,7 @@ describe('the window as a whole', () => {
       '.msg.rich .markdown-table',
       '.usage-heatmap-surface',
       '.usage-table-stack',
+      '.browser-use-tabs-viewport',
       '.file-panel-toolbar',
       '.file-preview-markdown pre',
       '.file-preview-markdown-table',
