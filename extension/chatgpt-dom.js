@@ -77,11 +77,19 @@ var CLF_DOM = (() => {
   // bytes inside the private prefix before Fiber exposes the exact message source, making its
   // length-delimited frame temporarily unparsable. Conceal that row without treating it as a
   // receipt; only an exact complete source may reveal the authored suffix.
-  function userPromptFrameHint(value) {
+  function userPromptFrameHint(value, rendered = false) {
     if (typeof value !== 'string') return false;
-    const normalized = value.replace(/\r\n?/g, '\n').trimStart();
-    const identity = promptContinuation(normalized);
-    return /^\[\[COS_CONTEXT:\d{1,6}\]\](?:\n|$)/.test(normalized.slice(identity.length));
+    // The current shell stores native Markdown line breaks as backslash + LF in
+    // the provider object. This is only a concealment hint; exact parsing still
+    // owns the authored suffix and recording bytes.
+    const normalized = value.replace(/\r\n?/g, '\n').trimStart().replace(/\\\n/g, '\n');
+    // DOM textContent omits native BR/paragraph boundaries. While exact source
+    // is unavailable, its leading reserved marker can conceal, never publish.
+    const identity = rendered
+      ? /^\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\s*/.exec(normalized)?.[0] ?? ''
+      : promptContinuation(normalized);
+    const header = /^\[\[COS_CONTEXT:\d{1,6}\]\]/.exec(normalized.slice(identity.length));
+    return Boolean(header && (rendered || /^(?:\n|$)/.test(normalized.slice(identity.length + header[0].length))));
   }
   function presentUserPrompts(readUserText) {
     return safe(() => {
@@ -97,7 +105,11 @@ var CLF_DOM = (() => {
         // source. Ignore that outer whitespace only for display; the frame's
         // internal length/boundary and all receipt/recording bytes stay exact.
         const authored = typeof source === 'string' ? userPromptText(source.trimStart()) : null;
-        const privateFrame = authored !== null || userPromptFrameHint(typeof source === 'string' ? source : rendered);
+        // An available exact source is authoritative for the current message.
+        // Rendered text can only conceal while Fiber has not supplied one.
+        const privateFrame = authored !== null || (typeof source === 'string'
+          ? userPromptFrameHint(source)
+          : userPromptFrameHint(rendered, true));
         let display = raw.nextElementSibling?.matches('[data-clf-user-text]') ? raw.nextElementSibling : null;
         if (!privateFrame) {
           raw.removeAttribute('data-clf-prompt-hidden'); display?.remove(); continue;
@@ -365,6 +377,9 @@ var CLF_DOM = (() => {
     return safe(() => {
       let value = (document.title || '').trim();
       if (!value) return '';
+      // The new shell briefly uses the submitted prompt as its provisional title.
+      // This is transport context, not a provider-authored conversation name.
+      if (userPromptFrameHint(value, true)) return '';
       value = value.replace(/\s*(?:[-|·]\s*)ChatGPT\s*$/i, '').trim();
       if (!value || /^(?:ChatGPT|New chat)$/i.test(value)) return '';
       return value.slice(0, 200);
@@ -2114,7 +2129,6 @@ var CLF_DOM = (() => {
   }
   /** Observed ChatGPT Plugins settings surface. Missing/ambiguous structure is not proof. */
   async function pluginRefreshView(connectorName, expectedTools = [], expectedAppId = null) {
-    const externalPlugins = connectorName === 'Chat On Steroids Plugins';
     const snapshot = await new Promise(resolve => {
       const nonce = crypto.randomUUID();
       const finish = value => { clearTimeout(timer); window.removeEventListener('message', receive); resolve(value); };
@@ -2127,7 +2141,7 @@ var CLF_DOM = (() => {
     });
     const route = /^#settings\/Plugins\/plugin_(asdk_app_[a-zA-Z0-9_-]+)$/.exec(location.hash);
     if (!snapshot || snapshot.appId !== route?.[1] || (expectedAppId ? snapshot.appId !== expectedAppId : snapshot.connectorName !== connectorName) ||
-        !Array.isArray(snapshot.tools) || (snapshot.tools.length < 1 && !externalPlugins) || snapshot.tools.length > (externalPlugins ? 257 : 16) || JSON.stringify(snapshot.tools).length > 300000 ||
+        !Array.isArray(snapshot.tools) || snapshot.tools.length > 257 || JSON.stringify(snapshot.tools).length > 300000 ||
         snapshot.tools.some(tool => !tool || typeof tool.name !== 'string' || !/^[a-z][a-z0-9_]{0,79}$/.test(tool.name) || typeof tool.description !== 'string' || tool.inputSchema?.type !== 'object') ||
         new Set(snapshot.tools.map(tool => tool.name)).size !== snapshot.tools.length) return null;
     const buttons = [...document.querySelectorAll('button[data-clf-plugin-refresh]')].filter(button => button.getAttribute('data-clf-plugin-refresh') === snapshot.appId && button.getClientRects().length > 0);
@@ -2563,6 +2577,7 @@ var CLF_DOM = (() => {
     turnIdOf,
     messageIdOf,
     userPromptText,
+    userPromptFrameHint,
     userMessageReaction,
     presentUserPrompts,
     composerVisible,

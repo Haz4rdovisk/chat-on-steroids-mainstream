@@ -246,6 +246,15 @@ async function harness(
   reply.set('register_document', () => ({ ok: true }));
   reply.set('status', () => ({ connected: true, paired: true, port: 8765, pending: 0 }));
   reply.set('events', () => ({ ok: true, pending: 0, durable: true }));
+  reply.set('correlate', message => ({ ok: true, data: {
+    conversationId: message.conversationId,
+    confirmed: Array.isArray(message.calls)
+      ? message.calls.map((call: Record<string, any>) => call.requestId).filter(Boolean)
+      : [],
+    pending: [],
+    conflicts: [],
+    complete: true
+  } }));
   reply.set('bind', () => ({ ok: true, bound: 0 }));
   reply.set('poll', () => ({ ok: true }));
   reply.set('closed', () => ({ ok: true }));
@@ -1012,11 +1021,12 @@ describe('desktop input delivery and helper ownership', () => {
     expect(userPromptText(recorded.at(-1)?.event.text as string)).toBe(authored);
   });
 
-  it('does not treat an arbitrary changed Markdown link as provider receipt evidence', async () => {
+  it.each([false, true])('rejects changed link destinations in provider receipt evidence (hard breaks: %s)', async hardBreaks => {
     const url = 'https://example.com/source';
     const authored = `Open ${url}`;
     const prepared = prependUserPrompt(authored, 'Private guidance');
-    const changed = prepared.replace(url, `[${url}](https://example.com/other)`);
+    const changedLink = prepared.replace(url, `[${url}](https://example.com/other)`);
+    const changed = hardBreaks ? changedLink.replace(/\n/g, '\\\n') : changedLink;
     live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
       desktop_input: message => ({ ok: true, data: message.authorize ? { ok: true } : message.ack ? { ok: true } : {
         input: claimed({ text: prepared, draftText: authored })
@@ -1039,33 +1049,36 @@ describe('desktop input delivery and helper ownership', () => {
     expect(live.sent.some(message => message.ack)).toBe(false);
   });
 
-  it('recovers only an escaped private prefix from canonical history and preserves authored escapes', async () => {
+  it.each([false, true])('recovers only an escaped private prefix from canonical history and preserves authored escapes (hard breaks: %s)', async hardBreaks => {
     const authored = 'Keep C:\\_work, the literal \\* glob, and [https://example.com](https://example.com).';
     const prepared = prependUserPrompt(authored, '# Private guidance\n- Preserve **literal** `code`.');
-    const providerReadback = prepared
+    const punctuation = prepared
       .replace('# Private guidance', '\\# Private guidance')
       .replace('- Preserve **literal** `code`.', '\\- Preserve \\*\\*literal\\*\\* `code`.');
+    const providerReadback = hardBreaks ? punctuation.replace(/\n/g, '\\\n') : punctuation;
     live = await harness(`https://chatgpt.com/c/${chatA}`);
     const user = userTurn(live.document, 'historical-serialized-user', providerReadback, { sent: false });
     await bindFiberTurns([{ section: user, turn: { turnId: 'historical-serialized-user', conversationId: chatA,
       messages: [{ role: 'user', stable: true, messageId: 'm-historical-serialized-user',
-        rawMessageId: 'm-historical-serialized-user', rawText: providerReadback }] } }]);
+        rawMessageId: 'm-historical-serialized-user', createTime: 1700000000, rawText: providerReadback }] } }]);
 
     live.hook.observe(); await live.hook.flush();
 
     expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe(authored);
     const recorded = emitted(live.sent, 'user_message').filter(row => row.event.messageId === 'm-historical-serialized-user');
-    expect(userPromptText(recorded.at(-1)?.event.text as string)).toBe(authored);
+    expect(recorded.length).toBeGreaterThan(0);
+    for (const row of recorded) expect(userPromptText(row.event.text as string)).toBe(authored);
   });
 
-  it('quarantines an incomplete canonical private frame instead of publishing its prefix', async () => {
+  it.each([false, true])('quarantines an incomplete canonical private frame instead of publishing its prefix (hard breaks: %s)', async hardBreaks => {
     const prepared = prependUserPrompt('Visible request', 'Private guidance that must stay hidden.');
-    const damaged = prepared.replace('Private guidance', 'Private guidanc');
+    const incomplete = prepared.replace('Private guidance', 'Private guidanc');
+    const damaged = hardBreaks ? incomplete.replace(/\n/g, '\\\n') : incomplete;
     live = await harness(`https://chatgpt.com/c/${chatA}`);
     const user = userTurn(live.document, 'damaged-canonical-user', damaged, { sent: false });
     await bindFiberTurns([{ section: user, turn: { turnId: 'damaged-canonical-user', conversationId: chatA,
       messages: [{ role: 'user', stable: true, messageId: 'm-damaged-canonical-user',
-        rawMessageId: 'm-damaged-canonical-user', rawText: damaged }] } }]);
+        rawMessageId: 'm-damaged-canonical-user', createTime: 1700000000, rawText: damaged }] } }]);
 
     live.hook.observe(); await live.hook.flush();
 
@@ -1230,9 +1243,12 @@ describe('desktop input delivery and helper ownership', () => {
     expect(sends()).toBe(1);
   });
 
-  it('uses the original framed user text for the receipt, recording and visible prompt after native inline formatting', async () => {
-    const ownText = 'Hello from the app';
-    const prompt = prependUserPrompt(ownText, 'Internal guidance: preserve `code` and `literal` text.');
+  it.each(['raw', 'punctuation', 'hard-breaks'])('uses the exact framed Send for receipt, turn ownership and presentation (%s)', async serialization => {
+    const ownText = 'Hello from the app\nKeep C:\\_work and the literal \\* glob.\\\nNext line.';
+    const prompt = prependUserPrompt(ownText, '# Internal guidance\n- Preserve `code` and **literal** text.');
+    let serialized = serialization === 'raw' ? prompt : prompt.replace(/\\/g, '\\\\')
+      .replace(/([#*])/g, '\\$1').replace(/^- /gm, '\\- ');
+    if (serialization === 'hard-breaks') serialized = serialized.replace(/\n/g, '\\\n');
     live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
       desktop_input: message => ({ ok: true, data: message.authorize || message.ack ? { ok: true } : { input: claimed({ text: prompt }) } })
     }, undefined, false, true);
@@ -1248,7 +1264,8 @@ describe('desktop input delivery and helper ownership', () => {
     const delivery = live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null });
     await click;
     await bindFiberTurns([{ section: user, turn: { turnId: 'framed-app-user', conversationId: chatA,
-      messages: [{ role: 'user', stable: true, messageId: 'm-framed-app-user', rawMessageId: 'm-framed-app-user', rawText: prompt }] } }], true);
+      messages: [{ role: 'user', stable: true, messageId: 'm-framed-app-user', rawMessageId: 'm-framed-app-user', rawText: serialized }] } }], true);
+    expect(live.sent.filter(message => message.ack)).toEqual([expect.objectContaining({ conversationId: chatA, messageId: 'm-framed-app-user' })]);
     expect(await delivery).toEqual({ ok: true });
     live.hook.observe(); await live.hook.flush();
     expect(live.sent.filter(message => message.ack)).toEqual([expect.objectContaining({ conversationId: chatA, messageId: 'm-framed-app-user' })]);
@@ -1257,6 +1274,25 @@ describe('desktop input delivery and helper ownership', () => {
     expect(userPromptText(recorded.at(-1)?.event.text as string)).toBe(ownText);
     expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe(ownText);
     expect(user.querySelector('[data-clf-prompt-hidden]')?.textContent).toBe(prompt.replaceAll('`', ''));
+    expect(emitted(live.sent, 'turn_start')).toHaveLength(1);
+    live.hook.observe(); await live.hook.flush();
+    expect(emitted(live.sent, 'turn_start')).toHaveLength(1);
+    const turnId = emitted(live.sent, 'turn_start')[0]!.event.turnId;
+    const section = assistantTurn(live.document, 'framed-app-answer', []);
+    await bindRenderedFiberTurns([{ section: user, turn: { turnId: 'framed-app-user', conversationId: chatA,
+      messages: [{ role: 'user', stable: true, messageId: 'm-framed-app-user', rawMessageId: 'm-framed-app-user', rawText: serialized }] } },
+    { section, turn: { turnId: 'framed-app-answer', conversationId: chatA, endMessageId: 'framed-final',
+      calls: [{ messageId: 'framed-call', requestId: 'framed-request', tool: 'read', answered: true }],
+      messages: [{ role: 'assistant', stable: true, messageId: 'framed-final', rawMessageId: 'framed-final', rawText: 'Verified.' }] } }]);
+    live.hook.observe(); await live.hook.flush();
+    expect(emitted(live.sent, 'assistant_message').at(-1)?.event).toMatchObject({ turnId, text: 'Verified.' });
+    expect(emitted(live.sent, 'tool_evidence').at(-1)?.event).toMatchObject({ turnId });
+    expect(emitted(live.sent, 'turn_end').at(-1)?.event).toMatchObject({ turnId, outcome: 'completed' });
+    // Inspect every publication, not only the last corrected DOM snapshot: a raw
+    // canonical-history upsert must never briefly overwrite the accepted input.
+    for (const row of emitted(live.sent, 'user_message').filter(row => row.event.messageId === 'm-framed-app-user')) {
+      expect(row.event.text).toBe(prompt);
+    }
   });
 
   it('quarantines a normalized transport frame while stamped Fiber ownership is unresolved without granting receipt authority', async () => {
@@ -1280,6 +1316,22 @@ describe('desktop input delivery and helper ownership', () => {
     live.hook.observe();
     expect(user.querySelector('[data-clf-user-text]')).toBeNull();
     expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(false);
+  });
+
+  it('conceals the current shell frame while its exact provider source has escaped line breaks', async () => {
+    const authored = 'Inspect the current shell safely';
+    const prompt = prependUserPrompt(authored, 'Private setup\n- Keep this hidden');
+    const serialized = prompt.replace(/\n/g, '\\\n').replace('- Keep', '\\- Keep');
+    live = await harness(`https://chatgpt.com/c/${chatA}`);
+    const user = userTurn(live.document, 'escaped-line-break-user', prompt, { sent: false });
+    await bindFiberTurns([{ section: user, turn: { turnId: 'escaped-line-break-user', conversationId: chatA,
+      messages: [{ role: 'user', stable: true, messageId: 'm-escaped-line-break-user',
+        rawMessageId: 'm-escaped-line-break-user', rawText: serialized }] } }]);
+
+    live.hook.observe(); await live.hook.flush();
+
+    expect(user.querySelector('[data-clf-prompt-hidden]')?.textContent).toBe(prompt);
+    expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe(authored);
   });
 
   it.each([false, true])('waits for composer hydration and replaces stale home text only in its owned fresh input tab (%s)', async (hasDraft) => {
@@ -4104,6 +4156,7 @@ describe('the app-owned chronological stream', () => {
     section.setAttribute('data-clf-fiber-turn', '0');
     await replyFiber([{
       v: 21, index: 0, messageId: 'interim-native-X', tool: 'read', app: 'Chat On Steroids Core', answered: true,
+      requestId,
       conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     }], [{ turnId: 'interrupted-fold-page', conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', messages,
       calls: [{ messageId: 'interim-native-X', requestId, tool: 'read', order: 0, answered: true }], activities: [],
@@ -5454,9 +5507,9 @@ describe('the app-owned chronological stream', () => {
     blocks[1]!.setAttribute('data-clf-fiber', '1');
     const rows = (secondAnswered: boolean) => [
       { v: 21, index: 0, messageId: 'fiber-one', tool: 'read_file', path: '/Chat On Steroids Core/read_file',
-        app: 'Chat On Steroids Core', answered: true, conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+        app: 'Chat On Steroids Core', requestId: 'wfr-live-one', answered: true, conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
       { v: 21, index: 1, messageId: 'fiber-two', tool: 'exec_command', path: '/Chat On Steroids Core/exec_command',
-        app: 'Chat On Steroids Core', answered: secondAnswered, conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }
+        app: 'Chat On Steroids Core', requestId: 'wfr-live-two', answered: secondAnswered, conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }
     ];
     const turn = (secondAnswered: boolean) => ({
       turnId: 'page-live-call-gap',
@@ -5481,11 +5534,15 @@ describe('the app-owned chronological stream', () => {
     expect(blocks[1]!.closest('[data-clf-native-hidden]')).not.toBeNull();
   });
 
-  it.each([
-    ['Chat On Steroids Plugins', true],
-    ['Chat On Steroids Backup', false]
-  ] as const)('suppresses only an answered exact supported connector block (%s)', async (app, hidden) => {
-    live = await harness(undefined, { activity: () => ({ ok: true, data: {
+  it.each(Array.from({ length: 12 }, (_, index) =>
+    `${String.fromCodePoint(0x600 + index)} ${index} ${String.fromCodePoint(0x1f900 + index)}`))
+  ('suppresses an answered locally confirmed connector block regardless of display name (%s)', async app => {
+    live = await harness(undefined, {
+      correlate: message => ({ ok: true, data: {
+        conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        confirmed: message.calls.map((call: any) => call.requestId)
+      } }),
+      activity: () => ({ ok: true, data: {
       entries: [], userAnchors: [{ seq: 0, time: 50, messageId: 'm-exact-block-owner' }], stream: [
         { seq: 1, time: 100, kind: 'turn_start', turnId: 'exact-block-owner' },
         { seq: 2, time: 110, kind: 'tool_call', turnId: 'exact-block-owner', callId: 'exact-block-call',
@@ -5496,13 +5553,14 @@ describe('the app-owned chronological stream', () => {
     const section = assistantTurn(live.document, 'exact-block-page', ['Native connector row']);
     const block = blocksOf(section)[0]!; section.setAttribute('data-clf-fiber-turn', '0'); block.setAttribute('data-clf-fiber', '0');
     await replyFiber([{ v: 21, index: 0, messageId: 'fiber-exact-block', tool: 'read_file',
-      path: `/${app}/read_file`, app, answered: true, conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }], [{
+      path: `/${app}/read_file`, app, requestId: 'wfr-exact-block', answered: true,
+      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }], [{
       turnId: 'exact-block-page', calls: [{ messageId: 'fiber-exact-block', tool: 'read_file', order: 0,
         answered: true, requestId: 'wfr-exact-block' }]
     }]);
     await live.hook.pullActivity(); live.hook.renderStreams();
     expect(overwriteRows(section, '[data-clf-call="exact-block-call"]')).toHaveLength(1);
-    expect(block.closest('[data-clf-native-hidden]') !== null).toBe(hidden);
+    expect(block.closest('[data-clf-native-hidden]')).not.toBeNull();
   });
 
   it.each([false, true])('hides result-only native duplicates only after mounted coverage for a shared request (same tool: %s)', async sameTool => {
@@ -6468,7 +6526,7 @@ describe('the app-owned chronological stream', () => {
     block.setAttribute('data-clf-fiber', '0');
     const bind = async (answered: boolean) => replyFiber([{
       v: 21, index: 0, messageId: 'fiber-moved-call', tool: 'read_file',
-      path: '/Chat On Steroids Core/read_file', app: 'Chat On Steroids Core', answered,
+      path: '/Chat On Steroids Core/read_file', app: 'Chat On Steroids Core', requestId: 'wfr-app-stream', answered,
       conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     }], [{ turnId, calls: [{ messageId: 'fiber-moved-call', tool: 'read_file', order: 0,
       answered, requestId: 'wfr-app-stream' }] }]);
@@ -9050,10 +9108,12 @@ describe('a content script reloaded into a turn already in flight', () => {
    * reload while the same request went on calling tools. A section above the question is not
    * this turn's; with none after it, the turn stays open until one appears and ends.
    */
-  it.each(['static', 'remounted-final', 'remounted-interim'])('never binds an adopted turn to an answer above its question (%s)', async variant => {
+  it.each(['static', 'remounted-final', 'remounted-interim'].flatMap(variant =>
+    [false, true].map(witnessed => ({ variant, witnessed }))))
+  ('never binds a turn to an answer above its question ($variant, witnessed Send: $witnessed)', async ({ variant, witnessed }) => {
     live = await harness(
       'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-      { activity: () => activity({ activeTurnId: 'g-old-run-0-4' }) },
+      { activity: () => activity(witnessed ? {} : { activeTurnId: 'g-old-run-0-4' }) },
       (document) => {
         userTurn(document, 'turn-old-user', 'fix the recorder', { sent: false });
         const settled = assistantTurn(document, 'turn-old', []);
@@ -9061,13 +9121,20 @@ describe('a content script reloaded into a turn already in flight', () => {
         answered.className = 'markdown';
         answered.textContent = 'The recorder is fixed.';
         settled.append(answered);
-        userTurn(document, 'turn-new-user', 'now make it fast', { sent: false });
-        // Hydration's Stop, over a transcript that ends with the question.
-        startGenerating(document, { send: false });
+        if (!witnessed) {
+          userTurn(document, 'turn-new-user', 'now make it fast', { sent: false });
+          // Hydration's Stop, over a transcript that ends with the question.
+          startGenerating(document, { send: false });
+        }
       }
     );
+    if (witnessed) {
+      userTurn(live.document, 'turn-new-user', 'now make it fast');
+      startGenerating(live.document, { send: false });
+    }
     live.hook.observe();
     await settle();
+    const expectedTurn = witnessed ? emitted(live.sent, 'turn_start').at(-1)!.event.turnId : 'g-old-run-0-4';
 
     // The page model names the previous answer terminal. It is the previous answer.
     let settled = live.document.querySelector('[data-turn-id="turn-old"]') as HTMLElement;
@@ -9099,7 +9166,7 @@ describe('a content script reloaded into a turn already in flight', () => {
     live.hook.observe();
     await settle();
     expect(emitted(live.sent, 'turn_end')).toHaveLength(0);
-    expect(emitted(live.sent, 'turn_start')).toHaveLength(0);
+    expect(emitted(live.sent, 'turn_start')).toHaveLength(witnessed ? 1 : 0);
 
     // ChatGPT mounts the real answer below the question and finishes it.
     startGenerating(live.document, { send: false });
@@ -9124,9 +9191,9 @@ describe('a content script reloaded into a turn already in flight', () => {
     await settle();
     const ends = emitted(live.sent, 'turn_end').map((entry) => entry.event);
     expect(ends).toHaveLength(1);
-    expect(ends[0]!.turnId).toBe('g-old-run-0-4');
+    expect(ends[0]!.turnId).toBe(expectedTurn);
     expect(ends[0]!.outcome).toBe('completed');
-    expect(emitted(live.sent, 'turn_start')).toHaveLength(0);
+    expect(emitted(live.sent, 'turn_start')).toHaveLength(witnessed ? 1 : 0);
   });
 
   it('never closes an adopted turn from visible prose alone', async () => {
@@ -9897,6 +9964,7 @@ describe('evidence from the page context', () => {
     app: 'TobisComputer',
     resource: 'resource://tools/agent_status',
     messageId: 'msg-1',
+    requestId: 'request-1',
     turnId: 'turn-1',
     conversationId: 'conv-1',
     createTime: 1_700_000_000,
@@ -9972,6 +10040,7 @@ describe('evidence from the page context', () => {
         'localCount',
         'messageId',
         'path',
+        'requestId',
         'resource',
         'tool',
         'turnId'
@@ -10022,11 +10091,13 @@ describe('evidence from the page context', () => {
     await reply([], [
       {
         turnId: 'reused-page-turn',
-        calls: [{ messageId: 'old-call', tool: 'read', order: 0, answered: true }]
+        conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        calls: [{ messageId: 'old-call', requestId: 'request-old-call', tool: 'read', order: 0, answered: true }]
       },
       {
         turnId: 'reused-page-turn',
-        calls: [{ messageId: 'live-call', tool: 'agents', order: 0, answered: false }]
+        conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        calls: [{ messageId: 'live-call', requestId: 'request-live-call', tool: 'agents', order: 0, answered: false }]
       }
     ]);
     // refreshFiber queues the evidence; the normal observer tick is what journals the queue.

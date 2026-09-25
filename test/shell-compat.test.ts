@@ -273,6 +273,38 @@ it.each([false, true])('captures live shell request metadata and public activity
   (f.win as any).__CLF_CONTENT_RECORDER__.stop();
 });
 
+it('captures request identity from the shell direct mapping snapshot', async () => {
+  const f = fixture(), { mapping, owner } = liveShellMapping(f);
+  // The current provider shell publishes the mapping itself as hook state. It no longer
+  // wraps that mapping in renderedConversation/renderedTurns.
+  owner.memoizedState = { memoizedState: mapping, next: null };
+  const turn = (await f.ask()).turns[0];
+  expect(f.queries).toEqual([]);
+  expect(turn.requests).toContainEqual(expect.objectContaining({ requestId: OTHER, messageId: CALL }));
+  expect(turn.calls[0]).toMatchObject({ messageId: CALL, requestId: OTHER, answered: false });
+  expect(JSON.stringify(turn)).not.toMatch(/PRIVATE_REASONING_CONTENT|DO_NOT_COPY/);
+  const r = await recorder(f);
+  await vi.waitFor(() => expect(r.sent).toContainEqual(expect.objectContaining({ type: 'correlate',
+    conversationId: THREAD, calls: expect.arrayContaining([expect.objectContaining({ requestId: OTHER })]) })));
+  (f.win as any).__CLF_CONTENT_RECORDER__.stop();
+});
+
+it.each(['foreign-owner', 'missing-user', 'wrong-user', 'two-mappings', 'getter'])
+('does not borrow a direct shell mapping from %s', async kind => {
+  const f = fixture(), { mapping, owner } = liveShellMapping(f);
+  owner.memoizedState = { memoizedState: mapping, next: null };
+  if (kind === 'foreign-owner') owner.memoizedProps.conversationId = OTHER;
+  if (kind === 'missing-user') delete mapping[USER];
+  if (kind === 'wrong-user') mapping[USER].message.id = OTHER;
+  if (kind === 'two-mappings') owner.memoizedState.next = { memoizedState: {
+    ...mapping, [CALL]: { id: CALL, message: { ...mapping[CALL].message,
+      metadata: { request_id: 'wfr_direct_conflict' } } }
+  }, next: null };
+  if (kind === 'getter') Object.defineProperty(mapping, USER, { get() { throw Error('not a published value'); } });
+  const turn = (await f.ask()).turns[0];
+  expect(turn).toBeDefined(); expect(turn.requests).toEqual([]); expect(turn.activities).toEqual([]);
+});
+
 // React keeps the host's original Fiber pointer across commits. The current root
 // and child lists are the published tree; memo bailouts can keep old return links.
 function bufferedShell(f: ReturnType<typeof fixture>, sharedChild = false) {
@@ -564,11 +596,20 @@ it.each(['duplicate-cache', 'conflicting-conversation', 'duplicate-id', 'unavail
   const turn = (await f.ask()).turns[0];
   expect(turn.requests).toEqual([]); expect(turn.messages).toHaveLength(2); expect(turn.endMessageId).toBeNull();
 });
-it('recognizes the shell recipient spelling without admitting similarly named connectors', async () => {
+it('treats every bounded connector display name as a candidate, never as ownership', async () => {
   const f = fixture(), step = f.entry.turn.items[1].items[1];
-  step.invocation.server = 'Chat_On_Steroids_Core'; step.invocation.tool = 'read';
-  expect((await f.ask()).turns[0].calls).toHaveLength(1);
-  step.invocation.server = 'Chat_On_Steroids_Core_Backup';
+  const generated = Array.from({ length: 64 }, (_, index) =>
+    `${String.fromCodePoint(0x400 + index)} ${index}-${String.fromCodePoint(0x1f300 + index)} ${'x'.repeat(index % 23)}`);
+  for (const server of generated) {
+    step.invocation.server = server; step.invocation.tool = 'read';
+    expect((await f.ask()).turns[0].calls, server).toHaveLength(1);
+  }
+  expect(fiberSource).not.toMatch(/OUR_APPS|OUR_CONNECTORS/);
+});
+
+it.each(['', 'x'.repeat(201)])('rejects an invalid connector display value (%s)', async server => {
+  const f = fixture(), step = f.entry.turn.items[1].items[1];
+  step.invocation.server = server;
   expect((await f.ask()).turns[0].calls).toEqual([]);
 });
 it('retires shell busy evidence when its owner becomes unreadable or another question is mounted', async () => {
@@ -615,11 +656,13 @@ it('preserves prepared multiline text through the shell editor serializer', () =
   expect(f.doc.execCommand).toHaveBeenCalledOnce();
   expect(edit.box.querySelector('tag')).toBeNull();
 });
-it('hides only a verified shell prompt frame and restores a recycled user bubble', async () => {
+it.each([false, true])('conceals a pending shell frame and restores a recycled user bubble (native breaks: %s)', async nativeBreaks => {
   const f = fixture(), unit = f.doc.querySelector('[data-content-search-unit-key$=":user"]')!;
   const raw = unit.querySelector('.whitespace-pre-wrap')!;
   const full = '[[COS_CONTEXT:13]]\nPrivate setup\n[[/COS_CONTEXT]]\n\nAuthored request';
   f.entry.turn.items[0].message = full; raw.textContent = full;
+  if (nativeBreaks) raw.replaceChildren(...full.split('\n').flatMap((line, index) =>
+    index ? [f.doc.createElement('br'), f.doc.createTextNode(line)] : [f.doc.createTextNode(line)]));
   f.api.presentUserPrompts();
   expect(unit.querySelector('[data-clf-user-text]')?.textContent).toBe('…'); // A layout key can conceal, never reconstruct.
   expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(true);
@@ -627,7 +670,12 @@ it('hides only a verified shell prompt frame and restores a recycled user bubble
   f.api.presentUserPrompts((message: { id: string }) => message.id === USER ? full : null);
   expect(unit.querySelector('[data-clf-user-text]')?.textContent).toBe('Authored request');
   expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(true);
-  expect(f.api.messages().find((message: any) => message.id === USER)?.text).toBe(full);
+  expect(f.api.messages().find((message: any) => message.id === USER)?.text).toBe(nativeBreaks ? full.replaceAll('\n', '') : full);
+  // A newer MAIN scan stamp can precede its reply. Loss of exact source must
+  // quarantine the same native Markdown bubble, never expose the hidden prefix.
+  f.api.presentUserPrompts(() => null);
+  expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(true);
+  expect(unit.querySelector('[data-clf-user-text]')?.textContent).toBe('…');
   f.entry.turn.items[0].message = 'A new question'; raw.textContent = 'A new question';
   f.api.presentUserPrompts(() => 'A new question');
   expect(unit.querySelector('[data-clf-user-text]')).toBeNull();
@@ -925,9 +973,20 @@ it.each(['duplicate-version', 'duplicate-bucket', 'contradictory-selection', 'un
   expect(mode === 'disabled' ? picker?.choices.some((c: any) => c.available) : picker).toBe(mode === 'disabled' ? false : null);
   expect(f.actions).not.toHaveBeenCalled();
 });
-it('records a native shell conversation and UUID tool origin through the real isolated recorder', async () => {
+it('records and presents a native shell turn with an arbitrary connector display name', async () => {
   const f = fixture(), win = f.win as any, sent: any[] = [];
   f.entry.turn.status = 'complete'; f.entry.turn.items[2].completed = true;
+  const displayName = `${String.fromCodePoint(0x4e80)} ${String.fromCodePoint(0x1f9ea)} connector`;
+  f.entry.turn.items[1].items[1].invocation.server = displayName;
+  const fullPrompt = '[[COS_CONTEXT:13]]\nPrivate setup\n[[/COS_CONTEXT]]\n\nAuthored request';
+  f.entry.turn.items[0].message = fullPrompt;
+  f.doc.querySelector('[data-user-message-bubble] .whitespace-pre-wrap')!.textContent = fullPrompt;
+  const call = { id: CALL, author: { role: 'assistant' }, recipient: 'api_tool.call_tool',
+    metadata: { request_id: OTHER }, create_time: 1700000000,
+    content: { content_type: 'code', text: JSON.stringify({ path: `/${displayName}/link_x/read`, args: {} }) } };
+  f.queries.push({ queryKey: ['chatgpt-conversation', THREAD], state: { data: { mapping: {
+    [CALL]: { id: CALL, message: call }
+  } } } });
   let hook: any, runtime: any;
   win.CLF_TEST_HOOK = (value: any) => { hook = value; };
   win.setInterval = () => 0;
@@ -944,10 +1003,12 @@ it('records a native shell conversation and UUID tool origin through the real is
   await hook.refreshFiber(); await hook.pullActivity(); hook.observe(); await hook.flush();
   const events = () => sent.filter(m => m.type === 'events').flatMap(m => m.entries.map((entry: any) => entry.event));
   await vi.waitFor(() => {
-    expect(events()).toContainEqual(expect.objectContaining({ kind: 'user_message', messageId: USER, text: 'hello' }));
+    expect(events()).toContainEqual(expect.objectContaining({ kind: 'user_message', messageId: USER, text: fullPrompt }));
     expect(events()).toContainEqual(expect.objectContaining({ kind: 'assistant_message', providerMessageId: ANSWER, text: 'Answer', final: true }));
     expect(events()).toContainEqual(expect.objectContaining({ kind: 'tool_evidence', calls: expect.arrayContaining([expect.objectContaining({ messageId: CALL, tool: 'read', answered: false })]) }));
   });
+  expect(f.doc.querySelector('[data-clf-user-text]')?.textContent).toBe('Authored request');
+  expect(f.doc.querySelector('[data-user-message-bubble] .whitespace-pre-wrap')!.hasAttribute('data-clf-prompt-hidden')).toBe(true);
   win.postMessage({ type: 'cos-request-origin', conversationId: THREAD, requestIds: [OTHER], observedAt: Date.now() }, win.location.origin);
   await vi.waitFor(() => expect(sent.some(m => m.type === 'correlate' && JSON.stringify(m).includes(OTHER))).toBe(true));
   const catalog = await new Promise(resolve => runtime({ type: 'clf-model-catalog', nonce: OTHER, expiresAt: Date.now() + 10000 }, {}, resolve));

@@ -722,32 +722,47 @@
   /** Candidate source forms produced by the provider's reversible Markdown serializer.
    * The original source is always tried first; authored text is never normalized. */
   function providerReadbackCandidates(value) {
-    const original = String(value || ''), unescaped = unescapeMarkdown(original), autolinks = collapseProviderAutolinks(unescaped);
-    return [original, ...(unescaped !== original ? [unescaped] : []), ...(autolinks !== unescaped ? [autolinks] : [])];
+    const original = String(value || '');
+    // The Markdown shell serializes hard breaks as backslash + newline. Decode those
+    // before punctuation so an authored literal backslash at a line end survives.
+    // Callers still require a complete app frame/exact prepared Send and native owner.
+    return [...new Set([original, original.replace(/\\\r?\n/g, '\n')].flatMap(source => {
+      const unescaped = unescapeMarkdown(source);
+      return [source, unescaped, collapseProviderAutolinks(unescaped)];
+    }))];
   }
-  const promptFrameHint = (value) => /^(?:\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n)?\[\[COS_CONTEXT:\d{1,6}\]\](?:\n|$)/
-    .test(String(value || '').replace(/\r\n?/g, '\n').trimStart());
   /** Recover only a complete length-delimited app frame. Provider Markdown escapes
    * are removed from the private prefix only; authored suffix bytes are never guessed. */
   function recoveredPromptFrame(value) {
     const normalized = String(value || '').replace(/\r\n?/g, '\n').trimStart();
     if (CLF_DOM.userPromptText(normalized) !== null) return normalized;
     const identity = /^(?:\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n)?/.exec(normalized)?.[0] ?? '';
-    const header = /^\[\[COS_CONTEXT:(\d{1,6})\]\]\n/.exec(normalized.slice(identity.length));
+    const header = /^\[\[COS_CONTEXT:(\d{1,6})\]\](\\?\n)/.exec(normalized.slice(identity.length));
     if (!header) return null;
     const contextStart = identity.length + header[0].length;
     const expectedLength = Number(header[1]);
-    const boundary = '\n[[/COS_CONTEXT]]\n\n';
-    let boundaryAt = normalized.indexOf(boundary, contextStart);
+    const canonicalHeader = `[[COS_CONTEXT:${header[1]}]]\n`;
+    const canonicalBoundary = '\n[[/COS_CONTEXT]]\n\n';
+    const boundaries = [canonicalBoundary, '\\\n[[/COS_CONTEXT]]\\\n\\\n'];
     let attempts = 0;
-    while (boundaryAt >= 0 && attempts++ < 32) {
-      const encodedContext = normalized.slice(contextStart, boundaryAt);
-      const context = unescapeMarkdown(encodedContext);
-      if (context.length === expectedLength) {
-        const recovered = normalized.slice(0, contextStart) + context + normalized.slice(boundaryAt);
-        return CLF_DOM.userPromptText(recovered) !== null ? recovered : null;
+    for (const boundary of boundaries) {
+      let boundaryAt = normalized.indexOf(boundary, contextStart);
+      while (boundaryAt >= 0 && attempts++ < 32) {
+        const encodedContext = normalized.slice(contextStart, boundaryAt);
+        // Older Markdown serialization escaped punctuation only; the current shell also
+        // escapes native line breaks. Try both representations and accept one only when the
+        // length-delimited private frame proves it exactly. The authored suffix is copied
+        // byte-for-byte from the provider object.
+        const contexts = [unescapeMarkdown(encodedContext),
+          unescapeMarkdown(encodedContext.replace(/\\\n/g, '\n'))];
+        for (const context of new Set(contexts)) {
+          if (context.length !== expectedLength) continue;
+          const recovered = identity + canonicalHeader + context + canonicalBoundary +
+            normalized.slice(boundaryAt + boundary.length);
+          if (CLF_DOM.userPromptText(recovered) !== null) return recovered;
+        }
+        boundaryAt = normalized.indexOf(boundary, boundaryAt + 1);
       }
-      boundaryAt = normalized.indexOf(boundary, boundaryAt + 1);
     }
     return null;
   }
@@ -784,14 +799,22 @@
     // A current exact-id provider object supersedes display text. If absent, an unchanged
     // plain-text bubble retains the existing exact-text receipt contract; no Markdown stripping.
     const raw = authored.length === 1 ? authored[0].rawText : message.text;
+    const actual = submittedUserSource(message.id, raw);
+    return typeof actual === 'string' && actual.length <= 256000 ? { text: actual, canonical: authored.length === 1,
+      ...(authored[0]?.attachments?.length ? { attachments: authored[0].attachments } : {}) } : null;
+  }
+  // Both mounted bubbles and canonical history must resolve the same accepted native
+  // row to its original bytes. A history scan must not overwrite the receipt's text
+  // with the provider's escaped transport frame, even for a single publication.
+  function submittedUserSource(messageId, raw) {
     const receiptPrepared = userSendReceipt?.preparedText;
     const pendingPrepared = typeof receiptPrepared === 'string' &&
       CLF_DOM.userPromptText(receiptPrepared.trimStart()) !== null &&
-      message.id !== userSendReceipt?.previousMessageId &&
+      messageId !== userSendReceipt?.previousMessageId &&
       Date.now() - userSendReceipt.at <= USER_SEND_RECEIPT_MS &&
       providerReadbackCandidates(raw).some(candidate => sendText(candidate) === sendText(receiptPrepared))
       ? receiptPrepared : null;
-    const remembered = submittedUserText.get(message.id);
+    const remembered = submittedUserText.get(messageId);
     const currentConversation = CLF_DOM.conversationId();
     const rememberedOwner = remembered && (remembered.conversationId
       ? remembered.conversationId === currentConversation
@@ -801,10 +824,8 @@
       ? remembered.text : null;
     // A later edit to this exact accepted row retires its cached source. Merely
     // visiting another conversation does not destroy the historical row's proof.
-    if (rememberedOwner && submitted === null) submittedUserText.delete(message.id);
-    const actual = submitted ?? pendingPrepared ?? raw;
-    return typeof actual === 'string' && actual.length <= 256000 ? { text: actual, canonical: authored.length === 1,
-      ...(authored[0]?.attachments?.length ? { attachments: authored[0].attachments } : {}) } : null;
+    if (rememberedOwner && submitted === null) submittedUserText.delete(messageId);
+    return submitted ?? pendingPrepared ?? raw;
   }
   function userMessagePresent(message) {
     if (message.role !== 'user' || !message.id) return false;
@@ -1906,6 +1927,10 @@
     // still this generation writing.
     for (const node of latest.nodes || [latest.node]) {
       if (!node || priorSections.has(node)) continue;
+      // A witnessed Send can also remount pre-question history. That new node is
+      // not a new answer. In-place writes to a known section retain the separate
+      // baseline-signature proof below, including the classic shell's reuse.
+      if (!unwitnessedGeneration && ownsQuestion && turns.indexOf(latest) < question) continue;
       genNode = node;
       return latest;
     }
@@ -2172,7 +2197,7 @@
         // bubble. Do not publish a broken transport frame while its exact source
         // is pending. A canonical user-authored marker remains literal text.
         const recoveredFrame = recoveredPromptFrame(source.text);
-        if (promptFrameHint(source.text) && recoveredFrame === null) continue;
+        if (CLF_DOM.userPromptFrameHint(source.text) && recoveredFrame === null) continue;
         const text = recoveredFrame ?? source.text;
         const key = occurrenceKey(message.id, text);
         const reaction = CLF_DOM.userMessageReaction(message);
@@ -3212,6 +3237,7 @@
       app: cap(raw.app, 200),
       resource: cap(raw.resource, 200),
       messageId: cap(raw.messageId, 200),
+      requestId: cap(raw.requestId, 100) || null,
       turnId: cap(raw.turnId, 200),
       conversationId: cap(raw.conversationId, 200),
       createTime: typeof raw.createTime === 'number' && Number.isFinite(raw.createTime) ? raw.createTime : null,
@@ -3976,15 +4002,7 @@
     // that an object belongs to this tab: marking `read` while parsing was the reason the popup
     // could show a request id as picked up even though refreshFiber() then discarded it before
     // the app ever saw it.
-    const acceptedCalls = answer.turns.flatMap((turn) => turn.calls || []);
-    observed.calls = acceptedCalls.length;
-    for (const call of acceptedCalls) {
-      if (!call.requestId) continue;
-      traceStage(call.requestId, 'read');
-      traceStage(call.requestId, 'tool', call.tool);
-    }
     fiberPresent = true;
-    fiberRows = answer.rows;
     fiberScanToken = answer.scanToken;
     const previousFiberTurns = [...fiberTurns.values()];
     fiberTurns = new Map();
@@ -4078,16 +4096,26 @@
       // chat. Do not let the ordinary fire-and-forget tool_evidence path race ahead of that
       // verdict: it would re-assert the URL conversation, bypass a rejected handshake and turn
       // an already-proven request owner into a sticky conflict.
-      const ownedPageConversation = ownedPageTurn ? concreteConversation(ownedPageTurn.conversationId) : null;
-      if (ownedPageTurn && (ownedPageTurn.requestOwnerRequired ||
-          ownedPageConversation && ownedPageConversation !== askedConversation)) {
+      if (ownerCalls.length > 0) {
         await ownerConfirmation;
-        // The ownership read-back added a new async boundary to this scan. Re-prove the same
-        // document/route before any observation from the pre-await Fiber frame can be emitted.
+        // Ownership confirmation is an async boundary for every connector name. Re-prove the
+        // same document/route before page candidates can affect presentation or recording.
         if (epoch !== askedEpoch || conversationId !== askedConversation) return;
         if (CLF_DOM.conversationId() !== askedConversation) return;
       }
     }
+    // A connector label is never ownership. Rows and tool diagnostics become ours only after
+    // the app has matched their opaque request id to an actual local MCP ingress.
+    const ownedCalls = answer.turns.flatMap((turn) => turn.calls || []).filter((call) =>
+      call.requestId && requestOwnersConfirmed.get(call.requestId) === askedConversation);
+    observed.calls = ownedCalls.length;
+    for (const call of ownedCalls) {
+      traceStage(call.requestId, 'read');
+      traceStage(call.requestId, 'tool', call.tool);
+    }
+    // Row descriptors remain untrusted candidates. coveredNativeBlocks() spends them only
+    // against exact request-id/tool/cardinality facts returned by the local recorder.
+    fiberRows = answer.rows;
     // A terminal message can finish the local turn before ChatGPT removes a stale Stop
     // control. While that latch is active, observe() keeps Fiber probing the newest visible
     // page turn. If Retry/Regenerate produces a newer public website message, the descriptor's
@@ -4100,22 +4128,8 @@
     }
     for (let index = 0; index < answer.turns.length; index++) {
       const turn = answer.turns[index];
-      const pageConversation = concreteConversation(turn.conversationId);
-      const provisionalOwnedTurn = turn.requestOwnerRequired || Boolean(
-        turn === ownedPageTurn &&
-        askedConversation &&
-        pageConversation &&
-        pageConversation !== askedConversation
-      );
       const fresh = turn.calls.filter((call) => {
-        // A mismatched owned turn is admissible only as a provisional-first-turn candidate.
-        // Its request id must have survived the app's explicit owner read-back before the
-        // transcript channel may repeat that evidence. A rejected/stale id is simply omitted;
-        // the already-proven owner remains authoritative and no sticky conflict is manufactured.
-        if (
-          provisionalOwnedTurn &&
-          (!call.requestId || requestOwnersConfirmed.get(call.requestId) !== askedConversation)
-        ) return false;
+        if (!call.requestId || requestOwnersConfirmed.get(call.requestId) !== askedConversation) return false;
         const owner = index === activeTurnIndex ? activeLocalTurnId || '' : '';
         const signature = `${call.tool}\u0000${call.requestId || ''}\u0000${call.answered ? '1' : '0'}\u0000${owner}`;
         if (callsReported.get(call.messageId) === signature) return false;
@@ -4290,8 +4304,12 @@
 
         const message = item.value;
         if (message.role === 'user') {
-          if (!message.createTime && !message.attachments?.length && renderedUserTexts.get(message.messageId) === message.rawText) continue;
-          const key = occurrenceKey(message.messageId, message.rawText + (message.attachments?.length ? JSON.stringify(message.attachments) : ''));
+          const source = submittedUserSource(message.messageId, message.rawText);
+          const recovered = recoveredPromptFrame(source);
+          if (CLF_DOM.userPromptFrameHint(source) && recovered === null) continue;
+          const text = recovered ?? source;
+          if (!message.createTime && !message.attachments?.length && renderedUserTexts.get(message.messageId) === text) continue;
+          const key = occurrenceKey(message.messageId, text + (message.attachments?.length ? JSON.stringify(message.attachments) : ''));
           if (message.createTime) {
             if (userAuthoredTimesReported.get(key) === message.createTime) continue;
             userAuthoredTimesReported.set(key, message.createTime);
@@ -4303,7 +4321,7 @@
           emit({
             kind: 'user_message',
             messageId: message.messageId,
-            text: message.rawText,
+            text,
             ...(message.attachments?.length ? { attachments: message.attachments } : {}),
             ...(message.createTime ? { time: message.createTime, authoredTime: true, authoredAt: message.createTime } : {})
           });
@@ -5621,39 +5639,6 @@
   }
 
   /**
-   * Whether a Fiber descriptor names one of *this* app's connectors.
-   *
-   * Kept in one place because getting it wrong is silent and total: 1.7.1 split the model
-   * surface into a Core and a Desktop connector, and while this test still spelled the
-   * single pre-1.7.1 name, no descriptor on any page matched it. Every call then looked
-   * like a stranger's — so it produced no attribution evidence and, worse, local rows were
-   * classified as ChatGPT-native activity and re-recorded as the assistant's own captions.
-   * `app_name` comes from the protected-resource metadata this app serves, not from what
-   * the user typed into ChatGPT, so these are this app naming itself.
-   *
-   * Exact names, never a prefix: `Chat On Steroids Backup` would be somebody else's
-   * connector, and a prefix test would have this app vouch for its traffic.
-   */
-  const OUR_CONNECTORS = [
-    'Chat On Steroids Core',
-    'Chat On Steroids Desktop',
-    'Chat On Steroids Plugins',
-    'TobisComputer'
-  ];
-
-  function ourConnectorApp(name) {
-    return typeof name === 'string' && OUR_CONNECTORS.includes(name);
-  }
-
-  function ourConnectorSeen(seen) {
-    if (!seen) return false;
-    if (ourConnectorApp(seen.app)) return true;
-    if (typeof seen.path !== 'string' || !seen.path.startsWith('/')) return false;
-    const end = seen.path.indexOf('/', 1);
-    return end > 1 && ourConnectorApp(seen.path.slice(1, end));
-  }
-
-  /**
    * One visible turn whose viewport position should survive an idle Overwrite repaint.
    *
    * Prefer a user turn: Overwrite mutates assistant sections only, so the user's question is
@@ -5858,7 +5843,7 @@
     const covered = [];
     for (const block of CLF_DOM.toolBlocks(turn)) {
       const row = fiberFor(block);
-      if (!row || row.answered !== true || !ourConnectorSeen(row) || !row.messageId) continue;
+      if (!row || row.answered !== true || !row.requestId || !row.messageId) continue;
       const exact = callsByMessage.get(row.messageId) || [];
       if (exact.length !== 1 || exact[0].answered !== true || !exact[0].requestId || row.tool !== exact[0].tool) continue;
       const key = callKey(exact[0]);

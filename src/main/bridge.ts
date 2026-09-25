@@ -204,6 +204,7 @@ import { APP_VERSION, BRIDGE_PROTOCOL } from './version.js';
 import { conversationHasMcpCallSince } from './session/store.js';
 import { sessionWorkingAt } from '../shared/session-activity.js';
 import { requestCorrelation } from './session/correlation.js';
+import { hasInboundToolRequest } from './mcp/inbound.js';
 import { bindAgentWorkspace } from './workspace.js';
 
 /** Fixed candidates so the extension can find the app without being told a port. */
@@ -984,9 +985,19 @@ function parseCallEvidence(input: unknown, untooled = false): PageCallEvidence[]
   for (const raw of input.slice(0, MAX_CALL_EVIDENCE)) {
     if (!raw || typeof raw !== 'object') continue;
     const item = raw as Record<string, unknown>;
+    const requestId =
+      typeof item['requestId'] === 'string' && /^[a-z0-9_-]{1,100}$/i.test(item['requestId'])
+        ? item['requestId']
+        : null;
     const tool = typeof item['tool'] === 'string' && TOOL_NAME.test(item['tool']) ? item['tool'] : '';
-    const messageId = typeof item['messageId'] === 'string' ? item['messageId'].slice(0, 120) : '';
-    const bare = untooled && typeof item['requestId'] === 'string';
+    // The response stream can expose the opaque request id before ChatGPT publishes an
+    // api_tool message. `/correlations` does not use a provider message id or tool name, so
+    // give that exact id a private stable key for deduplication instead of rejecting the
+    // earliest ownership proof. `/events` keeps requiring the real rendered identity.
+    const messageId = typeof item['messageId'] === 'string' && item['messageId']
+      ? item['messageId'].slice(0, 120)
+      : untooled && requestId ? `request:${requestId}` : '';
+    const bare = untooled && requestId !== null;
     if ((!tool && !bare) || !messageId) continue;
     if (seen.has(messageId)) {
       duplicated.add(messageId);
@@ -1002,10 +1013,7 @@ function parseCallEvidence(input: unknown, untooled = false): PageCallEvidence[]
       answered: item['answered'] === true,
       // Rebuilt like everything else here — an opaque id checked for shape, and a finite
       // number — so the page cannot smuggle anything through them.
-      requestId:
-        typeof item['requestId'] === 'string' && /^[a-z0-9_-]{1,100}$/i.test(item['requestId'])
-          ? item['requestId']
-          : null,
+      requestId,
       createTime:
         typeof item['createTime'] === 'number' && Number.isFinite(item['createTime']) ? item['createTime'] : null
     });
@@ -2108,13 +2116,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return held !== null && held.conversationId !== id;
     });
     const blocked = new Set(conflicts);
-    const unresolved = calls.filter((call) => call.requestId && !blocked.has(call.requestId) && requestCorrelation(call.requestId) === null);
+    // The connector's display name is user-owned and therefore never participates here.
+    // Instead, require the opaque id to have reached an actual local MCP dispatch. A page
+    // observation that wins the race against first ingress remains pending and is retried by
+    // the extension; it is not a conflict and does not create a local session by itself.
+    const pending = requestIds.filter((requestId) =>
+      !blocked.has(requestId) && requestCorrelation(requestId) === null && !hasInboundToolRequest(requestId));
+    const pendingSet = new Set(pending);
+    const unresolved = calls.filter((call) => call.requestId && !blocked.has(call.requestId) &&
+      !pendingSet.has(call.requestId) && requestCorrelation(call.requestId) === null);
     const observations: ChatObservation[] = unresolved.length > 0
       ? [{ kind: 'tool_evidence', time: Date.now(), calls: unresolved }]
       : [];
     // Even an already-confirmed mapping must ensure/reuse the chat session, matching /events'
     // first-observation semantics and making this one atomic operation from the page's view.
-    const sessionId = await recordRequestEvidence(id, observations);
+    const hasAdmittedEvidence = requestIds.some((requestId) =>
+      !blocked.has(requestId) && !pendingSet.has(requestId));
+    const sessionId = hasAdmittedEvidence ? await recordRequestEvidence(id, observations) : null;
     const confirmed = requestIds.filter((requestId) => requestCorrelation(requestId)?.conversationId === id);
     return json(res, 200, {
       ok: true,
@@ -2122,8 +2140,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       sessionId,
       requestIds,
       confirmed,
+      pending,
       conflicts,
-      complete: conflicts.length === 0 && confirmed.length === requestIds.length
+      complete: conflicts.length === 0 && pending.length === 0 && confirmed.length === requestIds.length
     }, origin);
   }
   if (route === '/events' && req.method === 'POST') {

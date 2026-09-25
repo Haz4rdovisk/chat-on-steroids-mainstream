@@ -105,6 +105,7 @@ const { completeProcessCall, createSession, deleteSession, findSessionByConversa
 );
 const sessionStoreModule = await import('../src/main/session/store.js');
 const { closeConversation, liveConversations, noteChatOrigin, recordChatObservations, recordProgress, recordToolCall, REQUEST_ID_GRACE_MS, resetRecorderForTests } = await import('../src/main/session/recorder.js');
+const { noteInboundToolRequest, resetInboundRequestsForTests } = await import('../src/main/mcp/inbound.js');
 const { resetBlockedChatsForTests, setChatBlocked } = await import('../src/main/session/blocked-chats.js');
 const {
   CONTINUATIONS_STATE,
@@ -369,6 +370,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  resetInboundRequestsForTests();
   recoveryBrowserWake.mockClear();
   vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(true);
   // A test that writes its own config is not allowed to leak it into the next one.
@@ -400,7 +402,8 @@ describe('direct browser control over the paired bridge', () => {
     const browserId = randomUUID(), conversationId = randomUUID(), foreignChat = randomUUID();
     const session = await createSession({ conversationId });
     const requestId = `wfr_browser_owner_${randomUUID()}`, foreignRequest = `wfr_browser_foreign_${randomUUID()}`;
-    for (const [chat, proofId] of [[conversationId, requestId], [foreignChat, foreignRequest]]) {
+    for (const [chat, proofId] of [[conversationId, requestId], [foreignChat, foreignRequest]] as const) {
+      noteInboundToolRequest(proofId);
       const proof = await request('POST', '/correlations', { body: { conversationId: chat, calls: [
         { requestId: proofId, messageId: randomUUID(), tool: 'browser_tabs', order: 0, answered: false }
       ] } });
@@ -1130,10 +1133,11 @@ describe('activity feed', () => {
     expect(liveConversations().some((entry) => entry.conversationId === conversationId)).toBe(true);
   });
 
-  it('atomically registers and verifies a live request id against its chat before the MCP call is filed', async () => {
+  it('atomically registers and verifies a locally admitted request id before its call is filed', async () => {
     await pair();
     const conversationId = '13131313-3535-5757-7979-919191919191';
     const requestId = 'f0f00009-1111-4111-8111-111111111111';
+    noteInboundToolRequest(requestId);
     const mapped = await request('POST', '/correlations', {
       body: {
         conversationId,
@@ -1211,6 +1215,7 @@ describe('activity feed', () => {
       } })).body).toEqual({ ok: true });
 
       expect((await request('POST', '/input/bind', { body: { id, owner, conversationId } })).body).toEqual({ ok: true });
+      noteInboundToolRequest(requestId);
       const mapped = await request('POST', '/correlations', { body: { conversationId, calls: [{
         messageId: 'reserved-opening-call', tool: 'read', order: 0, answered: false,
         requestId, createTime: Date.now() / 1000
@@ -1242,6 +1247,7 @@ describe('activity feed', () => {
     // fifteen second evidence window. Requiring a tool name here meant that id was refused
     // while the page could already prove who owned it, and the call was filed under
     // Unattributed activity. The tool name takes no part in the join.
+    noteInboundToolRequest(requestId);
     const mapped = await request('POST', '/correlations', {
       body: {
         conversationId,
@@ -1282,6 +1288,30 @@ describe('activity feed', () => {
     expect(refused.body).toMatchObject({ error: 'bad_request_evidence' });
   });
 
+  it('keeps page-first evidence pending until the exact request reaches local MCP ingress', async () => {
+    await pair();
+    const conversationId = '18181818-4040-6262-8484-969696969696';
+    const requestId = 'wfr-arbitrary-connector-first-call';
+    // usage.js sees the provider's exact request id before an api_tool message exists. The
+    // ownership endpoint must accept that real page-first shape without inventing a tool,
+    // connector label or provider message id.
+    const body = { conversationId, calls: [{ requestId }] };
+
+    const early = await request('POST', '/correlations', { body });
+    expect(early.body).toMatchObject({
+      ok: true, conversationId, confirmed: [], pending: [requestId], conflicts: [], complete: false,
+      sessionId: null
+    });
+    expect(await findSessionByConversation(conversationId, { requireUnique: true })).toBeNull();
+
+    noteInboundToolRequest(requestId);
+    const admitted = await request('POST', '/correlations', { body });
+    expect(admitted.body).toMatchObject({
+      ok: true, conversationId, confirmed: [requestId], pending: [], conflicts: [], complete: true
+    });
+    expect(admitted.body.sessionId).toBeTruthy();
+  });
+
   it('refuses a live handshake that contradicts an already-proven request owner without poisoning the original mapping', async () => {
     await pair();
     const firstConversation = '14141414-3636-5858-8080-929292929292';
@@ -1296,6 +1326,7 @@ describe('activity feed', () => {
       createTime: Date.now() / 1000
     };
 
+    noteInboundToolRequest(requestId);
     const first = await request('POST', '/correlations', {
       body: { conversationId: firstConversation, calls: [call] }
     });
@@ -1333,8 +1364,8 @@ describe('activity feed', () => {
     expect(firstCalls.some((event) =>
       event.kind === 'tool_call' && event.call.requestId === requestId && event.call.conversationId === firstConversation
     )).toBe(true);
-    const secondCalls = await readEvents(second.body.sessionId, { kinds: ['tool_call'] });
-    expect(secondCalls).toEqual([]);
+    expect(second.body.sessionId).toBeNull();
+    expect(await findSessionByConversation(secondConversation, { requireUnique: true })).toBeNull();
   });
 
   it('preserves complete logical message identities and projects their exact provider aliases', async () => {
@@ -6901,6 +6932,7 @@ describe('unattributed activity recovery', () => {
       await events(OTHER, [openTurn('another-incident-chat')]);
       await unattributedTurn('eta-other-request');
       expect(unattributedRepairEta(Date.now(), 'eta-known-request')).toBeNull();
+      noteInboundToolRequest('eta-other-request');
       await request('POST', '/correlations', { body: { conversationId: OTHER,
         calls: [{ requestId: 'eta-other-request', messageId: 'eta-resolved', tool: 'read', order: 0, answered: false }] } });
       expect(unattributedRepairEta(Date.now(), 'eta-other-request')).toBeNull();
@@ -6939,8 +6971,11 @@ describe('unattributed activity recovery', () => {
       if (kind === 'completed' || kind === 'stopped') await events(PRIME, [endTurn(`claim-${kind}`, kind)]);
       if (kind === 'new-turn') await events(PRIME, [openTurn('replacement-turn')]);
       if (kind === 'blocked') await setChatBlocked(PRIME, true);
-      if (kind === 'resolved') await request('POST', '/correlations', { body: { conversationId: PRIME,
-        calls: [{ requestId: id, messageId: `claim-proof-${kind}`, tool: 'read', order: 0, answered: false }] } });
+      if (kind === 'resolved') {
+        noteInboundToolRequest(id);
+        await request('POST', '/correlations', { body: { conversationId: PRIME,
+          calls: [{ requestId: id, messageId: `claim-proof-${kind}`, tool: 'read', order: 0, answered: false }] } });
+      }
       expect((await request('POST', '/repairs/claim', { body: { token: first!.token } })).body.allowed).toBe(false);
     } finally { vi.useRealTimers(); }
   });
@@ -6992,6 +7027,7 @@ describe('unattributed activity recovery', () => {
       }
       if (kind === 'resolved') {
         await unattributedTurn(id);
+        noteInboundToolRequest(id);
         await request('POST', '/correlations', { body: { conversationId: PRIME, calls: [{ requestId: id, messageId: 'resolved-message', tool: 'read', order: 0, answered: false }] } });
       }
       await vi.advanceTimersByTimeAsync(openedAt + 300_000 - Date.now());

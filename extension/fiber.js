@@ -100,33 +100,17 @@
     return taken;
   }
   /**
-   * The connectors this app is reached through. Nothing else is ours to vouch for.
-   *
-   * There is more than one now: 1.7.1 split the model-facing surface into a Core and a
-   * Desktop connector, so a single hardcoded name stopped matching *anything* the page
-   * held — every call in every chat lost its page evidence at once and was filed outside
-   * the conversation that made it. The name is not user input: ChatGPT takes `app_name`
-   * from the `resource_name` this app serves in its own protected-resource metadata
-   * (`server.ts`), so these are this app naming itself rather than labels somebody typed.
-   * The pre-1.7.1 name stays so an older chat's evidence still reads.
-   *
-   * Exact names, never a prefix: `Chat On Steroids Backup` would be somebody else's
-   * connector, and a prefix test would have this app vouch for its traffic.
+   * Connector names are user-chosen presentation. They may be compared only to validate that
+   * two page objects describe the same candidate call; they never decide that a call is ours.
+   * Local ownership is confirmed later by the app from the opaque MCP request id.
    */
-  const OUR_APPS = ['Chat On Steroids Core', 'Chat On Steroids Desktop', 'Chat On Steroids Plugins', 'TobisComputer'];
-
-  /** Whether an `invoked_resource.app_name` names one of this app's own connectors. */
-  function ourApp(name) {
-    if (typeof name !== 'string') return false;
-    for (let at = 0; at < OUR_APPS.length; at++) if (OUR_APPS[at] === name) return true;
-    return false;
+  function connectorName(value) {
+    return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : null;
   }
-
-  /** Whether a request path — `/<connector>/link_…/<tool>` — is one of ours. */
-  function ourPath(path) {
-    if (typeof path !== 'string' || path.charCodeAt(0) !== 47) return false;
-    const end = path.indexOf('/', 1);
-    return end > 1 && ourApp(path.slice(1, end));
+  function sameConnector(left, right) {
+    left = connectorName(left); right = connectorName(right);
+    if (!left || !right) return false;
+    return left === right || left.replaceAll(' ', '_') === right || right.replaceAll(' ', '_') === left;
   }
   /**
    * The tool path at the very front of a request payload.
@@ -1196,7 +1180,7 @@
     }
     for (const message of messages || []) {
       const result = resultOf(message);
-      if (!result || !ourApp(result.app)) continue;
+      if (!result || !connectorName(result.app) || !toolName(result.resource)) continue;
       const visited = new Set();
       let id = str(message.metadata?.parent_id), parentId = null;
       while (id && visited.size < MAX_CALLS && !visited.has(id)) {
@@ -1223,10 +1207,10 @@
     const result = resultOf(message);
     const messageId = str(message.id), requestId = str(message.metadata?.request_id);
     const tool = result && toolName(result.resource);
-    if (!result || !ourApp(result.app) || !messageId || !requestId || !tool) return null;
+    if (!result || !connectorName(result.app) || !messageId || !requestId || !tool) return null;
     return { ...result, messageId, requestId, tool, createTime: num(message.create_time) };
   }
-  /** Exact number of this app's own invocations represented by the whole turn, or null. */
+  /** Bounded number of structurally valid connector candidates represented by the turn. */
   function localCountOf(messages, resultParents = resultParentsOf(messages)) {
     if (!Array.isArray(messages)) return null;
     const ids = [];
@@ -1243,12 +1227,12 @@
     for (let at = 0; at < messages.length; at++) {
       const message = messages[at];
       const request = requestOf(message);
-      if (request && ourPath(request.path)) {
+      if (request && toolName(request.path)) {
         remember(request.messageId);
       }
 
       const result = resultOf(message);
-      if (result && ourApp(result.app)) {
+      if (result && connectorName(result.app) && toolName(result.resource)) {
         remember(resultParents.get(message) || completedCallOf(message)?.messageId);
       }
     }
@@ -1305,13 +1289,14 @@
     // Never borrow a neighbor's result to complete that request or a still-running group.
     if (request && !result && group.isCompletionRequestInProgress === false && messages.length === 2 &&
         messages[0].status === 'finished_successfully' && messages[1].status === 'finished_successfully' &&
-        !conflictingRequestScope(messages[0], messages[1]) && ourPath(request.path)) {
+        !conflictingRequestScope(messages[0], messages[1]) && toolName(request.path)) {
       const displayed = completedCallOf(messages[1]);
       if (displayed && displayed.requestId === request.requestId && identify(request, displayed) === displayed.tool) completed = displayed;
     }
     if (completed) return { v: VERSION, index, tool: completed.tool, path: null, app: completed.app,
       resource: completed.resource, messageId: completed.messageId, turnId: str(group.turnId),
       conversationId: str(group.clientThreadId) || str(group.conversationId), createTime: completed.createTime,
+      requestId: completed.requestId,
       hidden: int(own.call(group, 'collapsedSameToolCallCount') ? group.collapsedSameToolCallCount : null),
       localCount, answered: true };
     if (!request) return null;
@@ -1334,6 +1319,7 @@
       app: result ? result.app : null,
       resource: result ? result.resource : null,
       messageId: request.messageId,
+      requestId: request.requestId,
       turnId,
       conversationId: str(group.clientThreadId) || str(group.conversationId),
       createTime: request.createTime,
@@ -1439,7 +1425,7 @@
     for (let at = 0; at < messages.length && answered.size < MAX_CALLS; at++) {
       const message = messages[at];
       const result = resultOf(message);
-      if (!result || !ourApp(result.app)) continue;
+      if (!result || !connectorName(result.app) || !toolName(result.resource)) continue;
       const parent = resultParents.get(message);
       if (parent) answered.add(parent);
     }
@@ -1448,7 +1434,7 @@
     for (let at = 0; at < messages.length && out.length < MAX_CALLS; at++) {
       const request = requestOf(messages[at]);
       const completed = request ? null : completedCallOf(messages[at]);
-      if ((!request || !ourPath(request.path)) && !completed) continue;
+      if ((!request || !toolName(request.path)) && !completed) continue;
       const tool = completed ? completed.tool : toolName(request.path);
       const id = completed ? completed.messageId : request.messageId;
       if (!tool || !id) continue;
@@ -1531,14 +1517,27 @@
       if (!candidate || typeof candidate !== 'object' || inspected.has(candidate)) return;
       inspected.add(candidate);
       const conversation = value(candidate, 'renderedConversation'), turns = value(candidate, 'renderedTurns');
-      const mapping = value(conversation, 'mapping');
-      if (!mapping || !Array.isArray(turns) || turns.length > 4096 ||
-          turns.filter(turn => turn?.id === entry.id && turn.turn === entry.turn).length !== 1) return;
+      let mapping = value(conversation, 'mapping');
+      let snapshot = candidate;
+      if (mapping) {
+        if (!Array.isArray(turns) || turns.length > 4096 ||
+            turns.filter(turn => turn?.id === entry.id && turn.turn === entry.turn).length !== 1) return;
+      } else {
+        // The current shell publishes the exact conversation mapping directly as one hook
+        // snapshot instead of wrapping it in { renderedConversation, renderedTurns }. The
+        // owning component still names this entry's local conversation and the mapping must
+        // contain this exact native user message. Treat only that root object as a candidate;
+        // never search arbitrary nested objects for a convenient request id.
+        mapping = candidate;
+        snapshot = { renderedConversation: { mapping }, renderedTurns: [{ id: entry.id, turn: entry.turn }] };
+      }
       const node = value(mapping, userId), message = value(node, 'message');
       if (value(node, 'id') !== userId || value(message, 'id') !== userId || message.author?.role !== 'user') return;
       const prior = snapshots.get(mapping);
-      if (prior && prior.renderedConversation.current_node !== conversation.current_node) conflict = true;
-      snapshots.set(mapping, candidate);
+      const previousCurrent = value(prior?.renderedConversation, 'current_node');
+      const current = value(snapshot.renderedConversation, 'current_node');
+      if (prior && previousCurrent && current && previousCurrent !== current) conflict = true;
+      if (!prior || !previousCurrent && current) snapshots.set(mapping, snapshot);
     };
     let remaining = 2048;
     for (let at = fiber, up = 0; at && up < MAX_CLIMB && remaining > 0; up++, at = at.return) {
@@ -1617,21 +1616,21 @@
       const message = messageAt(id);
       if (message?.author?.role === 'assistant' && message.recipient === 'functions.exec') invocationIds.add(id);
     }
-    const serverName = name => OUR_APPS.find(app => name === app || name === app.replaceAll(' ', '_'));
     for (const call of shell.calls) {
       const reference = shell.callSources.get(call.messageId);
       if (!reference?.id || !selected.has(reference.id) || sourceCounts.get(reference.id) !== 1) continue;
       const result = messageAt(reference.id);
       if (result?.author?.role !== 'tool') continue;
       const resource = resultOf(result);
-      if (resource && (serverName(resource.app) !== serverName(reference.server) || toolName(resource.resource) !== call.tool)) continue;
+      if (resource && (!sameConnector(resource.app, reference.server) || toolName(resource.resource) !== call.tool)) continue;
       const invocation = messageAt(call.messageId);
       if (invocation) {
         const asked = requestOf(invocation), path = asked?.path;
         // Native N() keeps callId while replacing sourceMessage with the result.
         // This mounted relation, not cache position or a sibling's request id,
         // permits reading the original invocation's metadata after a reload.
-        if (invocation.recipient !== 'api_tool.call_tool' || !path || serverName(path.slice(1, path.indexOf('/', 1))) !== serverName(reference.server) ||
+        const separator = path?.indexOf('/', 1) ?? -1;
+        if (invocation.recipient !== 'api_tool.call_tool' || separator <= 1 || !sameConnector(path.slice(1, separator), reference.server) ||
             toolName(path) !== call.tool) continue;
         for (const key of ['request_id', 'working_turn_id', 'turn_exchange_id']) {
           const a = str(invocation.metadata?.[key]), b = str(result.metadata?.[key]);
@@ -1743,8 +1742,7 @@
             executionIds.push(id);
             continue;
           }
-          if (step?.type !== 'mcp-tool-call' || !OUR_APPS.some(app =>
-            step.invocation?.server === app || step.invocation?.server === app.replaceAll(' ', '_'))) continue;
+          if (step?.type !== 'mcp-tool-call' || !connectorName(step.invocation?.server)) continue;
           const id = str(step.callId), tool = toolName(step.invocation?.tool);
           if (!id || !tool) continue;
           if (!remember(id) || calls.length >= MAX_CALLS) return null;
@@ -2189,8 +2187,10 @@
         if (props.actions === observedActions) continue;
         if (observedActions) return null;
         observedActions = props.actions;
-        const externalPlugins = props.connector.name === 'Chat On Steroids Plugins';
-        if ((!props.actions.length && !externalPlugins) || props.actions.length > (externalPlugins ? 257 : 16) || typeof props.connector.name !== 'string') return null;
+        // Connector display names are user-owned presentation. All surfaces use
+        // the same bounded observation envelope; exact App ID and declarations
+        // decide refresh ownership in the isolated world.
+        if (props.actions.length > 257 || typeof props.connector.name !== 'string') return null;
         const budget = { bytes: 280000, nodes: 20000 };
         const tools = props.actions.map(action => ({ name: action.name, description: copySchema(action.description_model ?? action.description, budget), inputSchema: copySchema(action.params, budget) }));
         if (tools.some(tool => !NAME.test(tool.name) || typeof tool.description !== 'string' || !tool.inputSchema || tool.inputSchema.type !== 'object') ||
