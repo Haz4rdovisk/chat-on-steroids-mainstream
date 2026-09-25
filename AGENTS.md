@@ -1111,6 +1111,11 @@ late file cannot attach to a later draft, while ordinary edits and parallel impo
 
 Bridge chunks are bounded to 512 KiB and require the exact pre-send claimed input and attachment
 membership. Native upload completion and final provider submission are separate checks.
+Upload inputs are elected by kind within the exact current composer form, not React-generated
+ids. Ambiguous, disabled and foreign-form inputs fail closed. Classic attachment controls and
+the current shell's named image tile/unique remove button supply the same exact-file receipt;
+neither a successful change event nor a preview alone proves submission. Delivery errors wrap
+below the pending message instead of inheriting the status icon's fixed width.
 Explicit image injection freezes `attachmentDelivery: tool` plus normalized `toolImages` in
 the same outbox row, preserving authored attachment IDs for idempotent retries. Staging owns
 the bounded original reads; `input-images.ts` fully decodes at most 12 MiB/30 million pixels
@@ -1274,10 +1279,19 @@ retained-outbox fallback states use that same footprint; fallback pixels remain 
 as not saved to history. Asset hydration must not move the opened tail or a deliberate reader.
 
 ChatGPT-generated images use their own canonical `native_image` row, keyed by provider message
-UUID plus sediment asset id. They are neither assistant prose nor local tool calls and cannot
-establish turn completion, Goal eligibility or activity. Typed public tool/assistant image
+UUID plus sediment asset id. They are neither assistant prose nor local tool calls; a recorded
+image or its pixels alone cannot establish turn completion, Goal eligibility or activity.
+For an image-only shell response, the mounted provider turn must be complete and every selected
+typed image must be completed, non-preview and belong to that turn's exact message ids. This
+provider completion closes the turn without inventing assistant prose. Its exact provider message id
+travels on the completed `turn_end`; the canonical completion reader joins that boundary with the
+matching completed native image before retiring activity or admitting the next input. Batch order
+does not change ownership; a later question, conflicting turn or fresh work invalidates the proof.
+Typed public tool/assistant image
 outputs supply metadata first; final provider status and a complete, exactly owned native IMG
 permit optional preview capture. Main/thumbnail/mask clones of the same asset share that identity.
+Shell blob previews require the exact mounted typed item and completed per-image control; a
+nearby gallery, copied Fiber object or blob URL alone cannot establish asset ownership.
 The extension captures already-loaded pixels without fetching signed URLs; route, document epoch,
 owner, node and source revision must survive each await. At most two captures run concurrently.
 Previews are WebP, at most 384,000 encoded bytes, 1,600 pixels per edge and 2.56 million decoded
