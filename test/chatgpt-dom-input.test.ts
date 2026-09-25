@@ -412,9 +412,15 @@ describe('composer-owned controls and Send readiness', () => {
     expect(keys).not.toHaveBeenCalled();
   });
 
-  it.each(['hidden', 'inert', 'transcript', 'other-form'])('does not let a %s Stop control block this composer', async place => {
-    const stale = document.createElement('button'); stale.dataset.testid = 'stop-button';
+  it.each(['hidden', 'inert', 'transcript', 'other-form'].flatMap(place => [false, true].map(shell => ({ place, shell }))))
+  ('does not let a $place Stop control block this composer (shell=$shell)', async ({ place, shell }) => {
+    const stale = document.createElement('button');
+    if (shell) {
+      stale.setAttribute('aria-label', 'Stop');
+      document.querySelector('form')!.setAttribute('data-chatgpt-composer', '');
+    } else stale.dataset.testid = 'stop-button';
     const host = document.createElement(place === 'other-form' ? 'form' : 'section');
+    if (shell && place === 'other-form') host.setAttribute('data-chatgpt-composer', '');
     if (place === 'hidden') host.hidden = true;
     if (place === 'inert') host.setAttribute('inert', '');
     if (place === 'transcript') host.dataset.testid = 'conversation-turn-100';

@@ -1678,8 +1678,9 @@ Existing maintenance also checks at most 64 live ChatGPT pages once per minute i
 flight. It reuses recorder restoration, including the idempotent MAIN helper, without delaying
 repair/input delivery or opening/reloading tabs. Loading, discarded, frozen, navigated and
 disconnected pages are skipped; the existing page-reply deadline bounds recorder pings.
-Adopted generation recovery excludes historical assistant nodes above its user question, even
-when hydration remounts them. When a proven new question closes the adopted turn, its answer
+Generation ownership excludes historical assistant nodes above its exact user question, whether
+hydration remounts, revises in place or previously held them. Classic section reuse remains valid
+below the question. When a proven new question closes the adopted turn, its answer
 lookup ends before that exact new message, preserving legitimate completion of the prior answer.
 When the exact current question matches the generation, a newly mounted assistant section may
 replace its still-mounted interim section as the native response owner. Reordered or revised
@@ -1707,7 +1708,10 @@ question grants no such veto; a presentation artifact must not mint another acti
 
 Native Send/Stop controls belong to the current composer's form and must be rendered outside
 transcript/extension surfaces. Hidden, inert or quoted controls grant no action; multiple Send
-buttons are ambiguous. The existing transcript observer also follows composer-side relabel/hide
+buttons are ambiguous. The alternate shell's `Stop` label is recognized only inside its native
+composer form. Before assistant prose mounts, an app Stop command can use the exact accepted
+question, revalidated against the redeemed command after every await; the click is not completion.
+The existing transcript observer also follows composer-side relabel/hide
 mutations so hidden tabs notice Stop transitions without waiting for a throttled timer.
 Submission observes native Send readiness and acceptance within one 30-second deadline, freezes
 the editor/text/document, and clicks once. It never substitutes synthetic Enter. Goal-token and
@@ -1727,6 +1731,11 @@ entitlement. Do not enumerate every model × effort or create helper tabs to com
 uncertain catalog. Exact family rules live in `shared/chat-models.ts`.
 
 Model names and recovery policy checked against native picker metadata on **2026-09-17**:
+
+The desktop picker separates observed models from the effort range of the selected model.
+Changing effort never crosses into another model. Abbreviated native version labels expand
+only for display; provider ids, aliases, account eligibility and Send validation stay unchanged.
+The existing composer exclusions still apply to short version labels as well as full labels.
 
 | Display family / compatible short name | Execution identity / selected effort | Silence refresh |
 | --- | --- | --- |
@@ -2344,7 +2353,9 @@ editable composer and recorded original question before freezing the source iden
 the turn. Already observed identities and a real user Send remain cancellation boundaries during
 hydration; an empty loading DOM must not be treated as a different conversation. The source
 rechecks the composer before insertion. Failed manual preparation retires only its exact pre-Send token and
-stores a bounded concrete failure reason. Existing user drafts remain intact. Ambiguous dispatched
+stores a bounded concrete failure reason. A transient native Send-readiness failure instead keeps
+that same unsent ticket for the existing bounded pickup schedule, without a local retry loop.
+Existing user drafts remain intact. Ambiguous dispatched
 requests retain their existing custody and cannot be sent again merely because a receipt is absent.
 
 An unnamed destination never reports a successful resume ACK, even after a transport banner.
@@ -2373,6 +2384,16 @@ Before a pickup can Stop the original answer, refresh the ticket's source-send c
 An already dispatched or sent summary request can only be observed, never stopped by another
 pickup. Keep the original user-message/turn identity across that await; repeated presses
 must not revoke the operation already in flight.
+
+A claimed compaction repair carries the continuation token, independently of its repair token.
+A responsive source revalidates that exact existing ticket in main before Stop or Send,
+even when its local activity projection has not arrived. A stale/cancelled token cannot create
+or adopt another ticket. An already-running source attempt keeps custody without a reload.
+An unavailable document retains the existing reload recovery. The `resumed` acknowledgement
+reports that distinction, does not stamp a reload cooldown, and does not wait for a replacement
+document. Responsive refusals and navigation during the probe do not grant reload. Continue recovery reuses
+the bounded Fiber-reader repair when a successful hydration scan lacks the latest exact mapping;
+fresh native proof is still required before Stop or Send.
 
 The timeline keeps one Compact & Resume card for the marked token across late or refused
 source calls. Later activity is not evidence that summary writing, saving or destination

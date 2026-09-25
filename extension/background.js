@@ -2521,6 +2521,7 @@ async function maintainOnce() {
       conversationId: cleanConversationId(entry && entry.conversationId),
       token: entry && typeof entry.token === 'string' ? entry.token : '',
       reason: typeof entry?.reason === 'string' ? entry.reason : '',
+      continuationToken: typeof entry?.continuationToken === 'string' ? entry.continuationToken : '',
       requiresClaim: entry?.requiresClaim === true,
       suspended: entry?.reason === 'stalled',
       focus: Boolean(entry && entry.focus === true)
@@ -2636,7 +2637,7 @@ async function maintainOnce() {
 }
 
 async function performBrowserRepairs(repairs, policy) {
-  for (const { conversationId, token, reason, focus, requiresClaim, suspended } of repairs) {
+  for (const { conversationId, token, reason, focus, requiresClaim, suspended, continuationToken } of repairs) {
     // Re-scanned per repair rather than reused from above. Earlier entries in this same batch
     // may have created a tab, and the scan has to be the state immediately before the action or
     // the duplicate rule below is deciding on a tab list that no longer exists.
@@ -2705,6 +2706,25 @@ async function performBrowserRepairs(repairs, policy) {
         const tab = await chrome.tabs.get(target.id);
         if (tab.pendingUrl || conversationForTab(tab) !== conversationId ||
             (tab.discarded !== true && tab.frozen !== true) || tabDocuments[String(target.id)] !== documentId) {
+          await call(`/status?repairFailed=${encodeURIComponent(token)}&repairAction=${repairAction}`);
+          continue;
+        }
+      }
+      if (target && reason === 'compaction' && requiresClaim) {
+        // A responsive source can resume its durable ticket without destroying
+        // an in-progress settle/Stop attempt. The content owner retains all fences.
+        const resumed = await tabReply(target.id,
+          { type: 'clf-resume-compaction', conversationId, continuationToken }, documentId ? { documentId } : undefined);
+        if (resumed?.accepted === true) {
+          await call(`/status?repaired=${encodeURIComponent(token)}&repairAction=resumed`);
+          continue;
+        }
+        // A responsive refusal is not permission to destroy that document.
+        // Only an unavailable source retains reload recovery, after rechecking
+        // navigation across the probe (including an A -> B -> A document change).
+        const tab = await chrome.tabs.get(target.id);
+        if (resumed?.accepted === false || tab.pendingUrl || conversationForTab(tab) !== conversationId ||
+            tabDocuments[String(target.id)] !== documentId) {
           await call(`/status?repairFailed=${encodeURIComponent(token)}&repairAction=${repairAction}`);
           continue;
         }
@@ -3431,6 +3451,8 @@ const HANDLERS = {
         cancel: message.cancel === true,
         ticket: message.ticket === true,
         automatic: message.automatic === true,
+        ...((message.ticket === true || message.resume === true) && typeof message.token === 'string'
+          ? { token: message.token } : {}),
         ...((message.destinationAttempt === true || message.destinationDispatch === true || message.destinationLost === true)
           ? { commandId: String(message.commandId || ''), client: String(message.client || '') } : {}),
         // The capture. `token` names the transaction the page was given when it marked the

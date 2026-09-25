@@ -40,7 +40,8 @@ var CLF_DOM = (() => {
   const CONNECTOR = '[data-clf-fiber]';
   const STOP =
     'button[data-testid="stop-button"], button[data-testid="composer-stop-button"], ' +
-    'button[aria-label="Stop streaming"], button[aria-label="Stop generating"], button[aria-label="Stop answering"]';
+    'button[aria-label="Stop streaming"], button[aria-label="Stop generating"], button[aria-label="Stop answering"], ' +
+    'form[data-chatgpt-composer] button[aria-label="Stop"]';
   const SEND = 'button[data-testid="send-button"], form button[aria-label^="Send" i], form[data-chatgpt-composer] button[type="submit"]';
   /** The composer's own trailing controls, where the send and dictation buttons live. */
   const TRAILING =

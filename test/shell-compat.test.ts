@@ -681,6 +681,46 @@ it.each([false, true])('conceals a pending shell frame and restores a recycled u
   expect(unit.querySelector('[data-clf-user-text]')).toBeNull();
   expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(false);
 });
+it('keeps a new shell turn live through historical repaint and allows Stop before prose', async () => {
+  const f = fixture(), edit = editing(f);
+  f.entry.turn.status = 'complete'; f.entry.turn.items[2].completed = true;
+  const historical = f.doc.querySelector('[data-markdown-text-style]')!;
+  let next: ReturnType<typeof addExchange>, owner: string;
+  let assistant: Element, marker: Element, item: any;
+  const stop = f.doc.createElement('button'); stop.setAttribute('aria-label', 'Stop');
+  const clicks = vi.fn(); stop.addEventListener('click', clicks);
+  f.doc.querySelector('button[type="submit"]')!.addEventListener('click', event => {
+    event.preventDefault(); next = addExchange(f, 8, edit.serialize()); edit.box.replaceChildren();
+    const node = f.doc.querySelector(`[data-turn-key="${next.userId}"]`)!;
+    assistant = node.querySelector('[data-content-search-unit-key$=":assistant"]')!;
+    marker = node.querySelector('[data-chatgpt-agent-turn-start]')!;
+    assistant.remove(); marker.remove(); item = next.entry.turn.items.pop();
+    next.entry.turn.messageIds = [next.userId];
+    f.doc.querySelector('form')!.append(stop);
+  });
+  const r = await recorder(f, { stop_redeem: () => ({ ok: true, command: {
+    type: 'stop', conversationId: THREAD, turnId: owner, userMessageId: next.userId
+  } }) });
+  edit.box.textContent = 'Work on the new task'; f.doc.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+  await r.hook.refreshFiber(); r.hook.observe(); await r.hook.flush();
+  owner = r.events().find((e: any) => e.kind === 'turn_start').turnId;
+  historical.textContent += ' Repainted history';
+  await r.hook.refreshFiber(); r.hook.observe(); await r.hook.flush();
+  expect(r.events().filter((e: any) => e.kind === 'turn_end')).toEqual([]);
+  expect(await r.runtime({ type: 'clf-stop-turn', id: '1111111111111111', conversationId: THREAD, turnId: owner })).toEqual({ ok: true });
+  expect(clicks).toHaveBeenCalledTimes(1);
+  expect(r.events().filter((e: any) => e.kind === 'turn_end')).toEqual([]);
+  // A clicked control is not completion. Only the current native final settles it.
+  const node = f.doc.querySelector(`[data-turn-key="${next!.userId}"] > div`)!;
+  node.append(marker!, assistant!); next!.entry.turn.items.push(item!);
+  next!.entry.turn.messageIds.push(next!.answerId); next!.finish(); stop.remove();
+  await r.hook.refreshFiber(); r.hook.observe(); await r.hook.flush();
+  expect(r.events().filter((e: any) => e.kind === 'turn_end')).toEqual([
+    expect.objectContaining({ turnId: owner, outcome: 'completed' })
+  ]);
+  (f.win as any).__CLF_CONTENT_RECORDER__.stop();
+});
+
 it('delivers three successive shell inputs with exact receipts and completed answers', async () => {
   const f = fixture(), edit = editing(f);
   f.entry.turn.status = 'complete'; f.entry.turn.items[2].completed = true;
@@ -838,7 +878,7 @@ it('correlates an early shell stream request through the real observer and recor
   expect(JSON.stringify(r.sent)).not.toContain('NEVER_COPY_STREAM_TEXT');
   win.__CLF_CONTENT_RECORDER__.stop();
 });
-it('sends a marked shell handoff once and captures its exact completed brief instead of the preceding answer', async () => {
+it.each([false, true])('sends a marked shell handoff once and captures its exact completed brief (busy=%s)', async busy => {
   const f = fixture(), edit = editing(f), token = '0123456789abcdef0123456789abcdef';
   f.entry.turn.status = 'complete'; f.entry.turn.items[2].completed = true;
   const prompt = `[[CLF-HANDOFF:${token}]]\n\nWrite the brief. Keep **Markdown** and C:\\work intact.`;
@@ -856,9 +896,13 @@ it('sends a marked shell handoff once and captures its exact completed brief ins
     return { ok: true, data: { token, ...(m.ticket ? {} : { prompt }), sourceSend: { state },
       job: { stage: 'handoff-pending', busy: true, automatic: false, sourceSend: { state } } } };
   } });
+  const stop = f.doc.createElement('button'); stop.setAttribute('aria-label', 'Stop');
+  const stopped = vi.fn(() => stop.remove()); stop.addEventListener('click', stopped);
+  if (busy) f.doc.querySelector('form')!.append(stop);
   const pending = r.hook.startCompact();
   await vi.waitFor(() => expect(submitted).toEqual([prompt]), { timeout: 3000 });
   await r.hook.refreshFiber(); r.hook.observe(); await pending;
+  expect(stopped).toHaveBeenCalledTimes(busy ? 1 : 0);
   expect(summaries).toEqual([]);
   source!.finish(); source!.entry.turn.items[1]!.content = brief;
   await r.hook.refreshFiber(); r.hook.observe();

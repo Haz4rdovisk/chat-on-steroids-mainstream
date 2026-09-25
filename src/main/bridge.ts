@@ -1929,7 +1929,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const repaired = url.searchParams.get('repaired');
     const repairFailed = url.searchParams.get('repairFailed');
     const repairAction = url.searchParams.get('repairAction');
-    const action = repairAction === 'reloaded' || repairAction === 'reopened' ? repairAction : null;
+    const action = repairAction === 'reloaded' || repairAction === 'reopened' || repairAction === 'resumed' ? repairAction : null;
     if (repaired) {
       await confirmRepair(repaired.slice(0, 64), action);
     } else if (repairFailed) {
@@ -3051,7 +3051,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (body['ticket'] === true) {
       let ticket: Awaited<ReturnType<typeof fileCompactionTicket>>;
       try {
-        ticket = await fileCompactionTicket(sessionId, id, body['automatic'] === true);
+        if (typeof body['token'] === 'string') {
+          const existing = continuationForSession(sessionId);
+          if (!existing || existing.token !== body['token'] || existing.from !== id || existing.state !== 'awaiting-summary')
+            return json(res, 409, { error: 'compaction_ticket_changed' }, origin);
+          ticket = { opened: existing, started: false };
+        } else ticket = await fileCompactionTicket(sessionId, id, body['automatic'] === true);
       } catch (err) {
         logWarn(`bridge: could not durably file Compact & Resume for ${sessionId} — ${err instanceof Error ? err.message : String(err)}`);
         return json(res, 503, { error: 'continuation_not_durable', retryable: true, sessionId }, origin);
@@ -3193,6 +3198,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return json(res, 409, { error: 'conversation_superseded' }, origin);
     }
     const already = continuationForSession(sessionId);
+    if (typeof body['token'] === 'string' && (!already || already.token !== body['token'] || already.from !== id))
+      return json(res, 409, { error: 'compaction_ticket_changed' }, origin);
     if (already) {
       const prompt =
         already.state === 'awaiting-summary' && sendUnattempted(already.sourceSend)
@@ -7903,6 +7910,7 @@ async function takePendingRepairs(
     /** Raise the tab (or open the chat in front) before acting: a background tab is throttled. */
     focus: boolean;
     requiresClaim?: boolean;
+    continuationToken?: string;
   }> = [];
   for (const [conversationId, repair] of repairsInFlight) {
     const unclaimed = repair.reason !== 'unattributed' && repairNeedsClaim(repair) && repair.state === 'handed' && !repair.claimed;
@@ -7930,6 +7938,7 @@ async function takePendingRepairs(
         !stopRequestedFor(conversationId))
       {
         ready.push({ conversationId, token: repair.token, reason: repair.reason, focus: repair.reason === 'compaction',
+          ...(repair.reason === 'compaction' ? { continuationToken: continuationForSession(repair.sessionId)!.token } : {}),
           ...(repairNeedsClaim(repair) ? { requiresClaim: true } : {}) });
       }
   }
@@ -7974,16 +7983,19 @@ function attributionRepairCurrent(repair: Repair, session: SessionSummary | null
  * this app is no longer waiting on - an older turn's, or one already re-queued - matches
  * nothing and closes nothing, which is the only safe reading of it.
  */
-async function confirmRepair(token: string, action: 'reloaded' | 'reopened' | null): Promise<void> {
+async function confirmRepair(token: string, action: 'reloaded' | 'reopened' | 'resumed' | null): Promise<void> {
   for (const [conversationId, repair] of repairsInFlight) {
     if (repair.state === 'handed' && repair.token === token) {
+      if (action === 'resumed' && repair.reason !== 'compaction') return;
       if (!compactionRepairCurrent(conversationId, repair)) { repairsInFlight.delete(conversationId); return; }
       logInfo(`bridge: the browser confirmed ${repair.reason} recovery for ${conversationId} (${action ?? 'action unspecified'})`);
       repair.state = 'done';
       if (repair.attribution && repair.attribution.incident.firstAttemptAt === null)
         repair.attribution.incident.firstAttemptAt = Date.now();
-      lastBrowserRecoveryAt.set(conversationId, Date.now());
-      awaitingReturn.add(conversationId);
+      if (action !== 'resumed') {
+        lastBrowserRecoveryAt.set(conversationId, Date.now());
+        awaitingReturn.add(conversationId);
+      }
       if (repair.reason === 'silence') {
         const failedGrant = activeUntil.get(conversationId);
         if (failedGrant) failedGrant.until = Date.now() + recoveryBusyMs(failedGrant.model === 'pro');
@@ -8012,7 +8024,7 @@ async function confirmRepair(token: string, action: 'reloaded' | 'reopened' | nu
       await updateRepairProgress(
         conversationId,
         repair,
-        `${action === 'reopened' ? 'Reopened' : 'Reloaded'} chat to recover ${repairReason(repair)}.`
+        `${action === 'resumed' ? 'Resumed' : action === 'reopened' ? 'Reopened' : 'Reloaded'} chat to recover ${repairReason(repair)}.`
       );
       return;
     }
@@ -8020,7 +8032,7 @@ async function confirmRepair(token: string, action: 'reloaded' | 'reopened' | nu
 }
 
 /** An exact browser action failed; keep the episode queued and replace its one debug row. */
-async function failRepairAttempt(token: string, action: 'reloaded' | 'reopened' | null): Promise<void> {
+async function failRepairAttempt(token: string, action: 'reloaded' | 'reopened' | 'resumed' | null): Promise<void> {
   for (const [conversationId, repair] of repairsInFlight) {
     if (repair.state !== 'handed' || repair.token !== token) continue;
     logWarn(`bridge: the browser reported failed ${repair.reason} recovery for ${conversationId} (${action ?? 'action unspecified'})`);

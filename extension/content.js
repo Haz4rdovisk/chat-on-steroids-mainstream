@@ -1828,13 +1828,20 @@
     const native = currentAssistantTurn();
     const nativeId = pageTurnIds.get(expected);
     const latestNative = () => CLF_DOM.turns().at(-1);
-    if (!generating || !nativeId || native?.id !== nativeId || latestNative()?.id !== nativeId) return false;
+    const mappedAssistant = () => !!nativeId && latestNative()?.role === 'assistant' &&
+      latestNative()?.id === nativeId && pageTurnIds.get(expected) === nativeId;
+    // Thinking can start before an assistant section exists. The exact accepted
+    // question is already an owner; do not require prose before allowing Stop.
+    const questionId = openedUserMessageId;
+    if (!generating || !(native?.id === nativeId && mappedAssistant()) && !stopQuestionMatches(questionId)) return false;
     const reply = await ask({ type: 'stop_redeem', id: commandId, client: RUN_ID, conversationId: target });
     observe();
     const command = reply?.command;
     if (!reply?.ok || command?.type !== 'stop' || command.turnId !== expected || command.conversationId !== target) return false;
-    const canStop = () => current() && generating && (!unwitnessedGeneration || stopQuestionMatches(command.userMessageId)) && latestNative()?.role === 'assistant' &&
-      latestNative()?.id === nativeId && pageTurnIds.get(expected) === nativeId;
+    const canStop = () => current() && generating &&
+      (!unwitnessedGeneration || stopQuestionMatches(command.userMessageId)) &&
+      (mappedAssistant() || (questionId === command.userMessageId &&
+        openedUserMessageId === questionId && stopQuestionMatches(questionId)));
     // Concurrent redemptions may finish after the first click, before ChatGPT removes Stop.
     const stopped = stoppedAppCommands.has(commandId) || requestNativeStop(canStop);
     if (stopped) {
@@ -1908,10 +1915,11 @@
     const question = turns.findLastIndex(turn => turn.role === 'user');
     const ownsQuestion = Boolean(openedUserMessageId && question >= 0 &&
       CLF_DOM.messagesIn(turns[question]).some(message => message.role === 'user' && message.id === openedUserMessageId));
-    // Hydration may remount an old answer with a new node after our baseline.
-    // An adopted generation still belongs after the latest question; DOM novelty
-    // above that boundary cannot establish or retain its assistant owner.
-    if (unwitnessedGeneration) {
+    // All ownership paths obey the same question boundary: a remount, an in-place
+    // historical revision and an already-held node are equally unable to answer a
+    // later question. Without an observed question, classic same-section continuation
+    // still uses the baseline signature below.
+    if (unwitnessedGeneration || ownsQuestion) {
       if (question >= 0) turns = turns.slice(question + 1);
     }
     const latest = currentAssistantTurn(turns);
@@ -1927,10 +1935,6 @@
     // still this generation writing.
     for (const node of latest.nodes || [latest.node]) {
       if (!node || priorSections.has(node)) continue;
-      // A witnessed Send can also remount pre-question history. That new node is
-      // not a new answer. In-place writes to a known section retain the separate
-      // baseline-signature proof below, including the classic shell's reuse.
-      if (!unwitnessedGeneration && ownsQuestion && turns.indexOf(latest) < question) continue;
       genNode = node;
       return latest;
     }
@@ -3853,6 +3857,15 @@
       for (const call of batch) requestOwnersPending.delete(`${ownerConversation}\u0000${call.requestId}`);
     }
   }
+  async function repairFiberReader() {
+    const now = Date.now();
+    if (!fiberRepairing && now - fiberRepairAt >= 5000) {
+      fiberRepairAt = now;
+      fiberRepairing = ask({ type: 'repair_fiber' }).finally(() => { fiberRepairing = null; });
+    }
+    return fiberRepairing ? await fiberRepairing : null;
+  }
+
   async function refreshFiber(settled = null, presentationOnly = false) {
     // A bound chat can briefly lose its /c/<id> route during React/router churn, and a real
     // navigation to a fresh composer has the exact same pathname until ChatGPT assigns the
@@ -3881,14 +3894,7 @@
       // completed repair attempt that still cannot round-trip (or an explicit repair failure)
       // downgrades health; otherwise a transient timeout would flicker Overwrite and could
       // falsely complete interim prose through the degraded DOM fallback.
-      const now = Date.now();
-      if (!fiberRepairing && now - fiberRepairAt >= 5000) {
-        fiberRepairAt = now;
-        fiberRepairing = ask({ type: 'repair_fiber' }).finally(() => {
-          fiberRepairing = null;
-        });
-      }
-      const repair = fiberRepairing ? await fiberRepairing : null;
+      const repair = await repairFiberReader();
       if (repair && repair.ok === true) answer = await askFiber();
       if (answer === null) {
         if (!alive || epoch !== askedEpoch || conversationId !== askedConversation ||
@@ -8471,7 +8477,7 @@
     else localError = `${why} The app has not yet confirmed that this failed request was closed.`;
   }
 
-  async function startCompact(automatic = false) {
+  async function startCompact(automatic = false, expectedToken = null) {
     const forId = conversationId;
     const forEpoch = epoch;
     // A refused duplicate must not revoke the run already awaiting an app reply.
@@ -8549,7 +8555,8 @@
     // resume the same work, while the app still hands out no prompt until this page has proved
     // the chat stopped and its local calls settled. `automatic` lets Auto Off cancel only work
     // the threshold created, never a manual Compact & Resume press.
-    const filed = await ask({ type: 'compact', conversationId: forId, ticket: true, automatic });
+    const filed = await ask({ type: 'compact', conversationId: forId, ticket: true, automatic,
+      ...(expectedToken ? { token: expectedToken } : {}) });
     if (!current()) return;
     if (!filed || filed.ok !== true || !filed.data) {
       pressedAt = 0;
@@ -8561,6 +8568,15 @@
       return;
     }
     if (filed.data.job) job = filed.data.job;
+    const sourceToken = String(filed.data.token || '');
+    if (expectedToken && sourceToken !== expectedToken) {
+      nativeBusy = false;
+      nativePhase = '';
+      localError = 'The compaction ticket changed. Nothing was stopped or sent.';
+      renderControl();
+      return;
+    }
+    if (expectedToken) automatic = filed.data.job?.automatic === true;
 
     // Activity is only a projection and may predate a completed Send. The fresh ticket
     // owns permission to interrupt: after dispatch, Stop could cancel the handoff itself.
@@ -8639,7 +8655,7 @@
       return;
     }
 
-    const reply = await ask({ type: 'compact', conversationId: forId, resume: true });
+    const reply = await ask({ type: 'compact', conversationId: forId, resume: true, token: sourceToken });
     if (!current()) return;
     if (!reply || reply.ok !== true) {
       pressedAt = 0;
@@ -8657,7 +8673,7 @@
     // to submit: submitting a second instruction would start a second turn, and then two
     // answers would each have a claim on being the brief. Whichever page armed it is
     // watching it; this one just reports what is already happening.
-    if (!data.prompt) {
+    if (!data.prompt || data.token !== sourceToken) {
       nativeBusy = false;
       nativePhase = data.sourceSend && data.sourceSend.state !== 'not-attempted' ? 'waiting' : '';
       pressedAt = 0;
@@ -8693,6 +8709,21 @@
     // authority — a refused focus changes nothing about the ticket.
     if (automatic) void ask({ type: 'focus_tab', conversationId: forId }).catch(() => undefined);
     await startCompact(automatic);
+  }
+
+  function resumePendingCompactionFromRepair(expectedConversationId, expectedToken) {
+    if (!alive || !expectedConversationId || conversationId !== expectedConversationId ||
+        CLF_DOM.conversationId() !== expectedConversationId) return { accepted: false, reason: 'wrong-document' };
+    if (typeof expectedToken !== 'string' || !expectedToken) return { accepted: false, reason: 'missing-ticket' };
+    // The claimed repair may nudge this document, never grant Stop/Send. An
+    // already-running source attempt keeps custody even while its ticket reply
+    // is pending; reloading it here would destroy the work we are recovering.
+    if (nativeBusy) return { accepted: true, reason: 'source-busy' };
+    // The WAL can precede /activity. Do not interpret a missing local projection
+    // as a broken page. startCompact reserves this document synchronously, then
+    // revalidates this exact existing ticket in main before any Stop or Send.
+    void startCompact(false, expectedToken);
+    return { accepted: true, reason: 'ticket-revalidation' };
   }
 
   /**
@@ -8844,7 +8875,7 @@
       CLF_DOM.conversationId() === forId;
     let attemptCrossed = false;
     const automaticTicket = job && job.automatic === true;
-    const abandonBeforeSend = async (why, retireAutomatic = false) => {
+    const abandonBeforeSend = async (why, retireAutomatic = false, recoverable = false) => {
       if (!current()) return;
       nativeBusy = false;
       nativePhase = '';
@@ -8854,9 +8885,11 @@
       // continuation WAL so the app's next pickup reload can collect the same work. A composer
       // already holding another draft is different: ChatGPT restores that draft across reloads,
       // so the caller can retire this pre-Send ticket instead of scheduling the same refusal.
-      // A manual press keeps its historical immediate-abort behaviour; the user is still present
-      // and can retry it without leaving an invisible job behind.
-      if (!automaticTicket || retireAutomatic) {
+      // Native Send readiness can be transient even for a manual ticket. Keep
+      // that exact pre-dispatch obligation for the existing bounded pickup owner;
+      // localError prevents a hot retry loop in /activity. Real source/draft
+      // changes still retire it, and dispatched requests never reach this path.
+      if ((!automaticTicket && !recoverable) || retireAutomatic) {
         // A late failure belongs to this exact pre-Send ticket, never to a newer
         // manual retry. The durable guard refuses an already-dispatched request.
         await retireUnsentCompaction(forId, token, why, current);
@@ -8955,7 +8988,8 @@
       if (!sent) {
         CLF_DOM.clearPromptExact(prompt);
         if (!attemptCrossed) return void (await abandonBeforeSend(
-          'The handoff request was not submitted because the Send button or message box was not ready. Retry after the page is ready.'
+          'The handoff request was not submitted because the Send button or message box was not ready. The same request is waiting for recovery; nothing will be sent twice.',
+          false, sameSource()
         ));
         nativeBusy = false;
         nativePhase = 'waiting';
@@ -10920,9 +10954,20 @@
     const latest = CLF_DOM.turns().at(-1);
     if (latest?.role === 'assistant') {
       if (!await refreshFiber({ pageTurnId: latest.id, pageTurn: latest.node || latest.nodes?.[0] }) || !safe()) return false;
-      const current = CLF_DOM.turns().at(-1);
-      const native = current?.role === 'assistant' ? fiberTurnFor(current) : null;
-      if (!native) return false;
+      let current = CLF_DOM.turns().at(-1);
+      let native = current?.role === 'assistant' ? fiberTurnFor(current) : null;
+      // Hydration can leave a successful scan without the latest exact mapping.
+      // Reuse the bounded reader repair, then require fresh proof before acting.
+      if (!native) {
+        const repair = await repairFiberReader();
+        if (repair?.ok !== true || !safe()) return false;
+        current = CLF_DOM.turns().at(-1);
+        if (current?.role !== 'assistant' ||
+            !await refreshFiber({ pageTurnId: current.id, pageTurn: current.node || current.nodes?.[0] }) || !safe()) return false;
+        current = CLF_DOM.turns().at(-1);
+        native = current?.role === 'assistant' ? fiberTurnFor(current) : null;
+        if (!native) return false;
+      }
       // A known native final vetoes Continue even while delivery to the app is pending.
       if (native?.endMessageId) { await flush(); return false; }
     }
@@ -11430,6 +11475,10 @@
       }
       if (message.type === 'clf-recorder-ping') {
         sendResponse({ ok: true, recorderVersion: RECORDER_VERSION });
+        return false;
+      }
+      if (message.type === 'clf-resume-compaction') {
+        sendResponse(resumePendingCompactionFromRepair(message.conversationId, message.continuationToken));
         return false;
       }
       if (message.type === 'clf-repair-check') {

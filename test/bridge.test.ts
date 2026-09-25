@@ -1896,7 +1896,7 @@ describe('automatic compaction', () => {
     const ticket = continuationForSession(session.id)!;
     const status = await request('GET', '/status');
     const repair = status.body.repairs?.find((row: { conversationId: string }) => row.conversationId === conversationId);
-    expect(repair).toMatchObject({ conversationId, reason: 'compaction', requiresClaim: true });
+    expect(repair).toMatchObject({ conversationId, reason: 'compaction', requiresClaim: true, continuationToken: ticket.token });
     if (scenario === 'dispatched') {
       await request('POST', '/compact', { body: { conversationId, token: ticket.token, sourceAttempt: true } });
       await request('POST', '/compact', { body: { conversationId, token: ticket.token, sourceDispatch: true } });
@@ -1921,6 +1921,19 @@ describe('automatic compaction', () => {
     const second = await request('POST', '/compact', { body: { conversationId, ticket: true } });
     expect((await request('POST', '/compact', { body: { conversationId, token: first.body.token, sourceLost: true, sourceError } })).status).toBe(409);
     expect(continuationForSession(session.id)?.token).toBe(second.body.token);
+  });
+
+  it.each([false, true])('does not recreate or replace a cancelled repair ticket (replacement: %s)', async replace => {
+    await pair();
+    const conversationId = randomUUID();
+    const session = await createSession({ conversationId });
+    const first = await request('POST', '/compact', { body: { conversationId, ticket: true } });
+    await request('POST', '/compact', { body: { conversationId, cancel: true } });
+    const next = replace ? await request('POST', '/compact', { body: { conversationId, ticket: true } }) : null;
+    for (const operation of [{ ticket: true }, { resume: true }]) {
+      expect((await request('POST', '/compact', { body: { conversationId, token: first.body.token, ...operation } })).status).toBe(409);
+      expect(continuationForSession(session.id)?.token ?? null).toBe(next?.body.token ?? null);
+    }
   });
 
   it('hands an explicit desktop compaction to startup and fences a cancelled ticket', async () => {
@@ -2469,7 +2482,8 @@ describe('automatic compaction', () => {
    * reloads, and a ticket that still has not been sent after them is abandoned: nothing was
    * fenced, and the next working turn opens a fresh one. Every pickup asks for the tab in front.
    */
-  it.each([false, true])('reloads an unsent automatic ticket every 2 minutes with bounded attempts (restored: %s)', async restored => {
+  it.each([false, true].flatMap(restored => ['reloaded', 'resumed'].map(action => ({ restored, action }))))(
+    'recovers an unsent automatic ticket every 2 minutes with bounded attempts (restored: $restored, $action)', async ({ restored, action }) => {
     vi.useFakeTimers();
     try {
       await pair();
@@ -2505,7 +2519,7 @@ describe('automatic compaction', () => {
         await vi.advanceTimersByTimeAsync(attempt === 0 ? 1 : 2 * 60_000);
         const handout = await takeRepair();
         expect(handout).toMatchObject({ conversationId, reason: 'compaction', focus: true });
-        await request('GET', `/status?repaired=${handout!.token}&repairAction=reloaded`);
+        await request('GET', `/status?repaired=${handout!.token}&repairAction=${action}`);
         expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary' });
       }
 
