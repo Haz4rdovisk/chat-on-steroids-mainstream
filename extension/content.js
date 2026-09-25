@@ -736,33 +736,33 @@
   function recoveredPromptFrame(value) {
     const normalized = String(value || '').replace(/\r\n?/g, '\n').trimStart();
     if (CLF_DOM.userPromptText(normalized) !== null) return normalized;
-    const identity = /^(?:\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n)?/.exec(normalized)?.[0] ?? '';
-    const header = /^\[\[COS_CONTEXT:(\d{1,6})\]\](\\?\n)/.exec(normalized.slice(identity.length));
+    const encodedIdentity = /^(?:\\?\[){2}CLF\\?-(?:HANDOFF|RESUME)\\?:((?:[A-Za-z0-9]|\\?[_-]){16,64})(?:\\?\]){2}(?:\\?\n){2}/.exec(normalized)?.[0] ?? '';
+    const identity = unescapeMarkdown(encodedIdentity.replace(/\\\n/g, '\n'));
+    const header = /^(?:\\?\[){2}COS\\?_CONTEXT\\?:(\d{1,6})(?:\\?\]){2}\\?\n/.exec(normalized.slice(encodedIdentity.length));
     if (!header) return null;
-    const contextStart = identity.length + header[0].length;
+    const contextStart = encodedIdentity.length + header[0].length;
     const expectedLength = Number(header[1]);
     const canonicalHeader = `[[COS_CONTEXT:${header[1]}]]\n`;
     const canonicalBoundary = '\n[[/COS_CONTEXT]]\n\n';
-    const boundaries = [canonicalBoundary, '\\\n[[/COS_CONTEXT]]\\\n\\\n'];
+    // Match the encoded delimiters, retaining their original offsets. Never
+    // unescape the whole message: an authored suffix may contain literal escapes.
+    const boundaries = /\\?\n(?:\\?\[){2}\\?\/COS\\?_CONTEXT(?:\\?\]){2}(?:\\?\n){2}/g;
+    boundaries.lastIndex = contextStart;
     let attempts = 0;
-    for (const boundary of boundaries) {
-      let boundaryAt = normalized.indexOf(boundary, contextStart);
-      while (boundaryAt >= 0 && attempts++ < 32) {
-        const encodedContext = normalized.slice(contextStart, boundaryAt);
-        // Older Markdown serialization escaped punctuation only; the current shell also
-        // escapes native line breaks. Try both representations and accept one only when the
-        // length-delimited private frame proves it exactly. The authored suffix is copied
-        // byte-for-byte from the provider object.
-        const contexts = [unescapeMarkdown(encodedContext),
-          unescapeMarkdown(encodedContext.replace(/\\\n/g, '\n'))];
-        for (const context of new Set(contexts)) {
-          if (context.length !== expectedLength) continue;
-          const recovered = identity + canonicalHeader + context + canonicalBoundary +
-            normalized.slice(boundaryAt + boundary.length);
-          if (CLF_DOM.userPromptText(recovered) !== null) return recovered;
-        }
-        boundaryAt = normalized.indexOf(boundary, boundaryAt + 1);
-      }
+    let boundary;
+    while (attempts++ < 32 && (boundary = boundaries.exec(normalized))) {
+      const boundaryAt = boundary.index;
+      // A quoted boundary may share trailing newlines with the real one.
+      boundaries.lastIndex = boundaryAt + boundary[0].indexOf('\n') + 1;
+      const encodedContext = normalized.slice(contextStart, boundaryAt);
+      // Delimiters determine the serialization, never whichever decoded length
+      // happens to fit. Otherwise an escape can compensate for a missing byte.
+      const hardBreaks = /\\\n/.test(encodedIdentity + header[0] + boundary[0]);
+      const context = unescapeMarkdown(hardBreaks ? encodedContext.replace(/\\\n/g, '\n') : encodedContext);
+      if (context.length !== expectedLength) continue;
+      const recovered = identity + canonicalHeader + context + canonicalBoundary +
+        normalized.slice(boundaryAt + boundary[0].length);
+      if (CLF_DOM.userPromptText(recovered) !== null) return recovered;
     }
     return null;
   }
@@ -8600,7 +8600,7 @@
       return box?.isConnected && CLF_DOM.composerVisible() && box.getAttribute('contenteditable') !== 'false' &&
         box.getAttribute('aria-disabled') !== 'true' ? box : null;
     };
-    const expectedQuestionId = stoppedQuestionId || policyData.recordedQuestionId || null;
+    const expectedQuestionId = stoppedQuestionId || filed.data.sourceQuestionId || policyData.recordedQuestionId || null;
     const sourceReady = () => editableSource() && (!expectedQuestionId ||
       CLF_DOM.messages().filter(message => message.role === 'user').at(-1)?.id === expectedQuestionId);
     if (!sourceReady()) {
@@ -8987,6 +8987,9 @@
       if (!current()) return;
       if (!sent) {
         CLF_DOM.clearPromptExact(prompt);
+        if (!attemptCrossed && !sameSource()) return void (await abandonBeforeSend(
+          'The source question changed before the handoff request was submitted. Nothing was sent.', true
+        ));
         if (!attemptCrossed) return void (await abandonBeforeSend(
           'The handoff request was not submitted because the Send button or message box was not ready. The same request is waiting for recovery; nothing will be sent twice.',
           false, sameSource()

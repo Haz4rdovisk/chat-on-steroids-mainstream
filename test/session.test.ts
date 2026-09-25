@@ -3599,6 +3599,18 @@ describe('folding redrawn commentary', () => {
       message: { text, truncated: false, chars: text.length }
     }) as SessionEvent;
 
+  it.each([false, true])('presents a legacy Stop as a historical request, not an eternal pending state (ended=%s)', ended => {
+    const pending: SessionEvent = { ...progress(2, 'finish-release:stop-one',
+      'Stop requested. The finish hold was released; ChatGPT has not yet confirmed that generation stopped.'), source: 'app', turnId: 'stop-one' };
+    const terminal: SessionEvent = { seq: 4, time: 4, source: 'extension', kind: 'turn_end', turnId: 'stop-one', outcome: 'stopped' };
+    const folded = foldProgress(ended ? [pending, terminal] : [pending]);
+    expect(folded[0]).toMatchObject({ message: { text: 'Stop requested. The finish hold was released.', chars: 45 } });
+    expect(pending.kind === 'progress' && pending.message.text).toContain('not yet confirmed');
+    expect(foldProgress(folded)).toEqual(folded);
+    expect(foldProgress([{ ...pending, source: 'extension' }])[0]).toEqual({ ...pending, source: 'extension' });
+    expect(foldProgress([{ ...pending, turnId: 'other' }])[0]).toEqual({ ...pending, turnId: 'other' });
+  });
+
   it('keeps a Stop request truthful when the page reports stopped without a final answer', () => {
     const pending: SessionEvent = { ...progress(2, 'finish-release:stop-one', 'Stop requested. ChatGPT has not yet confirmed that generation stopped.'), source: 'app', turnId: 'stop-one' };
     const stopped: SessionEvent = { seq: 4, time: 4, source: 'extension', kind: 'turn_end', turnId: 'stop-one', outcome: 'stopped' };

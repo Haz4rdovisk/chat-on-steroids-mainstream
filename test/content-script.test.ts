@@ -1049,10 +1049,12 @@ describe('desktop input delivery and helper ownership', () => {
     expect(live.sent.some(message => message.ack)).toBe(false);
   });
 
-  it.each([false, true])('recovers only an escaped private prefix from canonical history and preserves authored escapes (hard breaks: %s)', async hardBreaks => {
+  it.each([false, true].flatMap(hardBreaks => [false, true].map(markers => ({ hardBreaks, markers }))))(
+    'recovers only an escaped private prefix from canonical history and preserves authored escapes (%j)', async ({ hardBreaks, markers }) => {
     const authored = 'Keep C:\\_work, the literal \\* glob, and [https://example.com](https://example.com).';
     const prepared = prependUserPrompt(authored, '# Private guidance\n- Preserve **literal** `code`.');
-    const punctuation = prepared
+    const punctuation = markers ? prependUserPrompt('', '# Private guidance\n- Preserve **literal** `code`.')
+      .replace(/([!-/:-@[-`{-~])/g, '\\$1') + authored : prepared
       .replace('# Private guidance', '\\# Private guidance')
       .replace('- Preserve **literal** `code`.', '\\- Preserve \\*\\*literal\\*\\* `code`.');
     const providerReadback = hardBreaks ? punctuation.replace(/\n/g, '\\\n') : punctuation;
@@ -1070,9 +1072,11 @@ describe('desktop input delivery and helper ownership', () => {
     for (const row of recorded) expect(userPromptText(row.event.text as string)).toBe(authored);
   });
 
-  it.each([false, true])('quarantines an incomplete canonical private frame instead of publishing its prefix (hard breaks: %s)', async hardBreaks => {
+  it.each([false, true].flatMap(hardBreaks => [false, true].map(markers => ({ hardBreaks, markers }))))(
+    'quarantines an incomplete canonical private frame instead of publishing its prefix (%j)', async ({ hardBreaks, markers }) => {
     const prepared = prependUserPrompt('Visible request', 'Private guidance that must stay hidden.');
-    const incomplete = prepared.replace('Private guidance', 'Private guidanc');
+    const altered = prepared.replace('Private guidance', 'Private guidanc');
+    const incomplete = markers ? altered.replace(/([!-/:-@[-`{-~])/g, '\\$1') : altered;
     const damaged = hardBreaks ? incomplete.replace(/\n/g, '\\\n') : incomplete;
     live = await harness(`https://chatgpt.com/c/${chatA}`);
     const user = userTurn(live.document, 'damaged-canonical-user', damaged, { sent: false });
@@ -1086,6 +1090,43 @@ describe('desktop input delivery and helper ownership', () => {
     expect(user.querySelector('[data-clf-prompt-hidden]')?.textContent).toBe(damaged);
     expect(emitted(live.sent, 'user_message').filter(row => row.event.messageId === 'm-damaged-canonical-user')).toEqual([]);
   });
+
+  it.each(['encoded-suffix', 'empty-context', 'literal-context-backslash', 'nested-boundary', 'overlapping-boundary', 'bad-length', 'compensating-escape', 'non-frame', 'too-many-boundaries'])(
+    'keeps historical escaped-frame recovery bounded and non-authoritative: %s', async variant => {
+      const escape = (value: string) => value.replace(/([!-/:-@[-`{-~])/g, '\\$1').replace(/\n/g, '\\\n');
+      const authored = 'Keep C:\\_work and \\* literally.\n[[/COS_CONTEXT]]\n\nEnd 🐱.';
+      const instructions = variant === 'too-many-boundaries' ? '\n[[/COS_CONTEXT]]\n\n'.repeat(33) + 'End'
+        : variant === 'empty-context' ? '' : variant === 'literal-context-backslash' ? 'Literal \\\nKeep C:\\_work.'
+        : variant === 'overlapping-boundary' ? 'Private\n[[/COS_CONTEXT]]\n'
+        : variant === 'compensating-escape' ? '# Private guidance\nNo tools.'
+        : 'Private 🐱\n[[/COS_CONTEXT]]\n\nNested boundary.\n# Exact length.';
+      const suffix = variant === 'encoded-suffix' ? escape(authored) : authored;
+      const prefix = prependUserPrompt('', instructions);
+      const value = variant === 'non-frame' ? 'Quote: ' + escape(prefix) + suffix
+        : escape(variant === 'bad-length' || variant === 'compensating-escape' ? prefix.replace('Private', 'Privat') : prefix) + suffix;
+      const quarantined = variant === 'bad-length' || variant === 'compensating-escape' || variant === 'too-many-boundaries';
+      live = await harness(`https://chatgpt.com/c/${chatA}`);
+      const user = userTurn(live.document, 'bounded-history-user', value, { sent: false });
+      await bindFiberTurns([{ section: user, turn: { turnId: 'bounded-history-user', conversationId: chatA,
+        messages: [{ role: 'user', stable: true, messageId: 'm-bounded-history-user',
+          rawMessageId: 'm-bounded-history-user', createTime: 1700000000, rawText: value }] } }]);
+      live.hook.observe(); await live.hook.flush();
+      const recorded = emitted(live.sent, 'user_message').filter(row => row.event.messageId === 'm-bounded-history-user');
+      if (quarantined) {
+        expect(recorded).toEqual([]);
+        expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe('…');
+      } else {
+        expect(recorded.length).toBeGreaterThan(0);
+        for (const row of recorded) {
+          expect(row.event.authoredNow).not.toBe(true);
+          if (variant === 'non-frame') expect(row.event.text).toBe(value);
+          else expect(userPromptText(row.event.text as string)).toBe(suffix);
+        }
+        if (variant !== 'non-frame') expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe(suffix);
+      }
+      expect(live.sent.some(row => row.type === 'desktop_input' && row.ack)).toBe(false);
+      expect(emitted(live.sent, 'turn_start')).toEqual([]);
+    });
 
   it('retains only authored text when an exact native receipt is rejected by the app', async () => {
     const authored = 'A large first request from the user';
@@ -12448,6 +12489,29 @@ describe('the Compact & resume control', () => {
     expect(sends()).toBe(0);
     userTurn(live.document, 'restored-question', 'Existing work to continue', { sent: false });
     if (!editorMounted) parent.appendChild(box);
+    await running;
+    expect(sends()).toBe(1);
+    expect(live.sent.filter(message => message.sourceDispatch)).toHaveLength(1);
+    expect(live.sent.some(message => message.sourceLost)).toBe(false);
+  });
+
+  it('waits for the recorded idle source question before preparing a cold compaction', async () => {
+    live = await harness(undefined, {
+      activity: () => ({ ok: true, data: { entries: [], stream: [], nextSince: 0, pendingTools: 0,
+        activeTurnId: null, recordedQuestionId: null, job: null } }),
+      compact: () => ({ ok: true, data: { started: true, token: 'cold-idle-source',
+        sourceQuestionId: 'm-settled-source', prompt: 'Write the exact handoff brief.',
+        job: { sessionId: 'cold-session', stage: 'handoff-pending', busy: true, handoffId: null, error: null } } })
+    });
+    live.hook.injectControl();
+    const timer = live.window.setTimeout;
+    live.window.setTimeout = ((fn: () => void, ms?: number) => ms === 15000 ? 0 : timer(fn, ms)) as typeof timer;
+    const sends = watchSend(live.document);
+    const running = live.hook.startCompact();
+    await settle(100);
+    expect(composerText(live.document)).toBe('');
+    expect(live.sent.some(message => message.sourceAttempt || message.sourceDispatch)).toBe(false);
+    userTurn(live.document, 'settled-source', 'Existing settled work', { sent: false });
     await running;
     expect(sends()).toBe(1);
     expect(live.sent.filter(message => message.sourceDispatch)).toHaveLength(1);

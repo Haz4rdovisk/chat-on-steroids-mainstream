@@ -1031,9 +1031,15 @@ export function foldProgress(events: readonly SessionEvent[]): SessionEvent[] {
     }
     out[index] = null;
   }
-  // A page-local stopped verdict is not provider cancellation confirmation.
-  // Preserve the recorded request instead of manufacturing a stronger receipt.
-  return out.filter((event): event is SessionEvent => event !== null);
+  // A request is a historical fact, not a permanently pending status. Normalize
+  // only the legacy app-authored sentence; never infer provider cancellation.
+  return out.filter((event): event is SessionEvent => event !== null).map(event =>
+    event.kind === 'progress' && event.source === 'app' && event.turnId &&
+    event.progressId === `finish-release:${event.turnId}` && event.message.text ===
+      'Stop requested. The finish hold was released; ChatGPT has not yet confirmed that generation stopped.'
+      ? { ...event, message: { ...event.message, text: 'Stop requested. The finish hold was released.',
+          chars: 'Stop requested. The finish hold was released.'.length } }
+      : event);
 }
 
 export interface TokenPressure {

@@ -1865,6 +1865,60 @@ describe('activity feed', () => {
 describe('automatic compaction', () => {
   const settled = () => new Promise((resolve) => setTimeout(resolve, 25));
 
+  it('returns the idle source question on the exact compaction ticket, without reopening a turn', async () => {
+    await pair();
+    const conversationId = randomUUID();
+    await request('POST', '/events', { body: { conversationId, events: [
+      { kind: 'user_message', time: Date.now(), text: 'Existing settled work', messageId: 'settled-question' },
+      { kind: 'turn_start', time: Date.now(), turnId: 'settled-turn' },
+      { kind: 'turn_end', time: Date.now(), turnId: 'settled-turn', outcome: 'completed' }
+    ] } });
+    const activity = await request('GET', `/activity?conversationId=${conversationId}`);
+    expect(activity.body.recordedQuestionId).toBeNull();
+    const ticket = await request('POST', '/compact', { body: { conversationId, ticket: true } });
+    expect(ticket.body).toMatchObject({ sourceQuestionId: 'settled-question', sourceSend: { state: 'not-attempted' } });
+    expect((await getSession(ticket.body.sessionId))?.activeTurnId).toBeNull();
+  });
+
+  it('rejects a compaction ticket cancelled during source-question readback', async () => {
+    await pair();
+    const conversationId = randomUUID();
+    const session = await createSession({ conversationId });
+    const store = await import('../src/main/session/store.js');
+    const read = store.readLatestUserMessage;
+    let entered!: () => void, release!: () => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    const spy = vi.spyOn(store, 'readLatestUserMessage').mockImplementationOnce(async (...args) => {
+      const question = await read(...args); entered(); await resume; return question;
+    });
+    try {
+      const pending = request('POST', '/compact', { body: { conversationId, ticket: true } });
+      await reading;
+      await request('POST', '/compact', { body: { conversationId, cancel: true } });
+      release();
+      expect((await pending).body.error).toBe('compaction_ticket_changed');
+      expect(continuationForSession(session.id)).toBeNull();
+    } finally { release(); spy.mockRestore(); }
+  });
+
+  it.each(['reopened', 'resumed', 'failed'])('does not call initial source preparation a recovery incident (%s)', async action => {
+    await pair();
+    const conversationId = randomUUID();
+    const session = await createSession({ conversationId });
+    await compactSession(session.id);
+    const status = await request('GET', '/status');
+    const repair = status.body.repairs.find((r: { conversationId: string }) => r.conversationId === conversationId);
+    expect(repair).toBeDefined();
+    expect((await request('POST', '/repairs/claim', { body: { token: repair.token } })).body.allowed).toBe(true);
+    await request('GET', `/status?${action === 'failed' ? 'repairFailed' : 'repaired'}=${repair.token}&repairAction=${action === 'failed' ? 'reopened' : action}`);
+    const progress = (await readEvents(session.id)).filter(e => e.kind === 'progress');
+    if (action === 'failed') expect(progress).toEqual(expect.arrayContaining([expect.objectContaining({
+      message: expect.objectContaining({ text: expect.stringContaining('failed') })
+    })]));
+    else expect(progress).toEqual([]);
+  });
+
   it.each([false, true])('hands manual compaction the pending repair only before browser claim (claimed=%s)', async claimed => {
     await pair();
     const conversationId = randomUUID();
@@ -2871,6 +2925,39 @@ describe('delivering a bootstrap', () => {
       expect((await request('GET', `/activity?conversationId=${source}`)).body.bootstrapMessageId).toBeNull();
     }
     expect((await request('GET', `/activity?conversationId=${middle}`)).body.bootstrapMessageId).toBeNull();
+  });
+
+  it('accepts the exact destination marker after the resume command ACK committed first', async () => {
+    await pair();
+    const source = randomUUID(), destination = randomUUID(), foreign = randomUUID();
+    const { sessionId, token } = await compactedSession(source, 'Resume receipt fixture');
+    const command = queueResume(sessionId, token)!;
+    const client = 'resume-receipt-tab';
+    await redeem(command.id, client);
+    expect((await request('POST', '/compact', { body: {
+      token, commandId: command.id, client, destinationAttempt: true
+    } })).body.allowed).toBe(true);
+    expect((await request('POST', '/compact', { body: {
+      token, commandId: command.id, client, destinationDispatch: true
+    } })).body.armed).toBe(true);
+    const ack = { id: command.id, client, status: 'sent', conversationId: destination };
+    expect((await request('POST', '/commands/ack', { body: ack })).body.committed).toBe(true);
+    const marker = { token, conversationId: destination, destinationMessageId: 'resume-opening' };
+    expect((await request('POST', '/compact', { body: { ...marker, conversationId: foreign } })).status).toBe(409);
+    expect((await request('POST', '/compact', { body: marker })).body.committed).toBe(true);
+    expect((await request('POST', '/compact', { body: marker })).body.committed).toBe(true);
+    expect((await request('POST', '/compact', { body: { ...marker, destinationMessageId: 'other-message' } })).status).toBe(409);
+    expect((await request('POST', '/commands/ack', { body: ack })).body.committed).toBe(true);
+    expect((await getSession(sessionId))?.conversationId).toBe(destination);
+    expect(continuationByToken(token)?.destinationSend).toEqual({
+      state: 'sent', conversationId: destination, messageId: 'resume-opening'
+    });
+    const { upsertMessageEvent } = await import('../src/main/session/store.js');
+    const text = `[[CLF-RESUME:${token}]]\n\nResume receipt fixture`;
+    await upsertMessageEvent(sessionId, { source: 'extension', time: Date.now(), kind: 'user_message',
+      messageId: 'resume-opening', message: { text, chars: text.length, truncated: false } });
+    expect((await request('GET', `/activity?conversationId=${destination}`)).body.bootstrapMessageId).toBe('resume-opening');
+    expect((await request('GET', `/activity?conversationId=${source}`)).body.bootstrapMessageId).toBeNull();
   });
 
   it('protects a resume destination before the browser opener can record a shadow session', async () => {

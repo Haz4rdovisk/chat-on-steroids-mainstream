@@ -648,6 +648,54 @@ it('uses typed running state rather than a translated Stop caption', async () =>
   await f.ask(); expect(f.api.generating()).toBe(true); expect(f.api.composerSubmitReady()).toBe(false);
   expect(f.api.stopButton()).toBeNull(); // No guessed action target.
 });
+
+// Observed on the signed-in shell (2026-09-25); localized-control diagnosis from #405.
+const stopSquare = 'M4.5 5.75C4.5 5.05964 5.05964 4.5 5.75 4.5H14.25C14.9404 4.5 15.5 5.05964 15.5 5.75V14.25C15.5 14.9404 14.9404 15.5 14.25 15.5H5.75C5.05964 15.5 4.5 14.9404 4.5 14.25V5.75Z';
+function translatedStop(f: ReturnType<typeof fixture>) {
+  const form = f.doc.querySelector('form[data-chatgpt-composer]')!;
+  form.insertAdjacentHTML('beforeend', '<button type="button" class="size-token-button-composer bg-composer-primary" aria-label="Durdur">' +
+    `<svg viewBox="0 0 20 20"><path d="${stopSquare}"></path></svg></button>`);
+  return form.lastElementChild as HTMLButtonElement;
+}
+it('recognizes a translated Stop without changing the exact action-owner check', () => {
+  const f = fixture(), button = translatedStop(f), clicked = vi.fn();
+  button.addEventListener('click', clicked);
+  expect(f.api.generating()).toBe(true);
+  expect(f.api.stopButton()).toBe(button);
+  expect(f.api.stopGeneration(() => false)).toBe(false);
+  button.disabled = true;
+  expect(f.api.stopGeneration(() => true)).toBe(false);
+  button.disabled = false;
+  let checks = 0;
+  expect(f.api.stopGeneration(() => ++checks === 1)).toBe(false);
+  expect(clicked).not.toHaveBeenCalled();
+  expect(f.api.stopGeneration(() => true)).toBe(true);
+  expect(clicked).toHaveBeenCalledTimes(1);
+});
+it.each(['send', 'voice', 'unknown-icon', 'hidden', 'inert', 'history', 'foreign-form', 'missing-slot'])(
+  'does not mistake a non-Stop control for a localized Stop: %s', reason => {
+    const f = fixture(), button = translatedStop(f);
+    if (reason === 'send') { button.type = 'submit'; button.querySelector('path')!.setAttribute('d', 'M9.33467 16.6663V4.93978L4.6374 9.63704'); }
+    if (reason === 'voice') { button.dataset.state = 'closed'; button.querySelector('svg')!.insertAdjacentHTML('beforeend', '<path d="M10 2.5v6"></path>'); }
+    if (reason === 'unknown-icon') button.querySelector('path')!.setAttribute('d', stopSquare + ' M0 0L20 20');
+    if (reason === 'hidden') button.style.display = 'none';
+    if (reason === 'inert') button.setAttribute('inert', '');
+    if (reason === 'history') f.doc.querySelector('[data-turn-key]')!.append(button);
+    if (reason === 'foreign-form') { const form = f.doc.createElement('form'); f.doc.body.append(form); form.append(button); }
+    if (reason === 'missing-slot') button.className = 'some-other-action';
+    expect(f.api.stopButton()).toBeNull();
+    expect(f.api.generating()).toBe(false);
+    expect(f.api.stopGeneration(() => true)).toBe(false);
+  });
+it('refuses ambiguous translated controls and preserves explicit Stop priority', () => {
+  const f = fixture(), first = translatedStop(f);
+  translatedStop(f);
+  expect(f.api.generating()).toBe(true);
+  expect(f.api.stopButton()).toBeNull();
+  first.dataset.testid = 'stop-button';
+  expect(f.api.stopButton()).toBe(first);
+});
+
 it('preserves prepared multiline text through the shell editor serializer', () => {
   const f = fixture(), edit = editing(f);
   const value = '[[COS_CONTEXT:42]]\n# Worker instructions\n- Keep **literal** text, C:\\work and `<tag>`.\n[[/COS_CONTEXT]]\n\nContinue the task.';
@@ -681,6 +729,25 @@ it.each([false, true])('conceals a pending shell frame and restores a recycled u
   expect(unit.querySelector('[data-clf-user-text]')).toBeNull();
   expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(false);
 });
+it.each(['', 'HANDOFF', 'RESUME'])('reads escaped historical shell frames without cached Send proof (%s)', async kind => {
+  const f = fixture(), unit = f.doc.querySelector('[data-content-search-unit-key$=":user"]')!;
+  const raw = unit.querySelector('.whitespace-pre-wrap')!;
+  const identity = kind ? `[[CLF-${kind}:token_0123456789abcdef]]\n\n` : '';
+  const suffix = 'Keep C:\\_work, literal \\* and **source**.\n[[/COS_CONTEXT]]';
+  const prefix = identity + '[[COS_CONTEXT:13]]\nPrivate setup\n[[/COS_CONTEXT]]\n\n';
+  const value = prefix.replace(/([!-/:-@[-`{-~])/g, '\\$1').replace(/\n/g, '\\\n') + suffix;
+  f.entry.turn.items[0].message = value; raw.textContent = value;
+  f.entry.turn.status = 'complete'; f.entry.turn.items[2].completed = true;
+  const r = await recorder(f, { compact: () => ({ ok: false, error: 'Unknown continuation token' }) });
+  try {
+    expect(unit.querySelector('[data-clf-user-text]')?.textContent).toBe(identity + suffix);
+    expect(raw.textContent).toBe(value);
+    expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(true);
+    expect(r.sent.some(m => m.type === 'desktop_input' && m.ack)).toBe(false);
+    expect(r.events().filter((e: any) => e.kind === 'turn_start')).toEqual([]);
+  } finally { (f.win as any).__CLF_CONTENT_RECORDER__.stop(); }
+});
+
 it('keeps a new shell turn live through historical repaint and allows Stop before prose', async () => {
   const f = fixture(), edit = editing(f);
   f.entry.turn.status = 'complete'; f.entry.turn.items[2].completed = true;

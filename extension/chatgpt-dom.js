@@ -80,14 +80,15 @@ var CLF_DOM = (() => {
   // receipt; only an exact complete source may reveal the authored suffix.
   function userPromptFrameHint(value, rendered = false) {
     if (typeof value !== 'string') return false;
-    // The current shell stores native Markdown line breaks as backslash + LF in
-    // the provider object. This is only a concealment hint; exact parsing still
-    // owns the authored suffix and recording bytes.
-    const normalized = value.replace(/\r\n?/g, '\n').trimStart().replace(/\\\n/g, '\n');
+    // Inspect only the reserved header's neighbourhood, including provider
+    // punctuation/hard-break escapes. This is concealment, never receipt proof
+    // or authority to rewrite the authored suffix. Matches shared/user-prompt.ts.
+    const normalized = value.replace(/\r\n?/g, '\n').trimStart().slice(0, 400)
+      .replace(/\\\n/g, '\n').replace(/\\([!-/:-@[-`{-~])/g, '$1');
     // DOM textContent omits native BR/paragraph boundaries. While exact source
     // is unavailable, its leading reserved marker can conceal, never publish.
     const identity = rendered
-      ? /^\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\s*/.exec(normalized)?.[0] ?? ''
+      ? /^\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\](?:\\?\s)*/.exec(normalized)?.[0] ?? ''
       : promptContinuation(normalized);
     const header = /^\[\[COS_CONTEXT:\d{1,6}\]\]/.exec(normalized.slice(identity.length));
     return Boolean(header && (rendered || /^(?:\n|$)/.test(normalized.slice(identity.length + header[0].length))));
@@ -745,7 +746,7 @@ var CLF_DOM = (() => {
   /** Stop is a busy hint only; the exact provider terminal still owns turn completion. */
   function generating() {
     return safe(() => {
-      if (nativeComposerControls(STOP).length > 0) return true;
+      if (stopControls().length > 0) return true;
       // Historical interrupted exchanges can retain in_progress forever. Only the
       // latest native response can describe this composer's current generation.
       const latest = [...document.querySelectorAll(SHELL_TURN)].filter(node =>
@@ -754,9 +755,26 @@ var CLF_DOM = (() => {
     }, false);
   }
 
+  // The current shell localizes Stop and omits test ids. Its primary composer
+  // button uses this exact square, unlike Send's arrow and Voice's four paths.
+  // Observed live 2026-09-25; adapted from #405. Keep explicit selectors first
+  // and fail closed if the unlabelled structure changes, rather than guess.
+  const STOP_SQUARE_PATH = 'M4.5 5.75C4.5 5.05964 5.05964 4.5 5.75 4.5H14.25C14.9404 4.5 15.5 5.05964 15.5 5.75V14.25C15.5 14.9404 14.9404 15.5 14.25 15.5H5.75C5.05964 15.5 4.5 14.9404 4.5 14.25V5.75Z';
+  function stopControls() {
+    const labelled = nativeComposerControls(STOP);
+    if (labelled.length) return labelled;
+    const form = composer()?.closest('form');
+    if (!form) return [];
+    return [...form.querySelectorAll('button[type="button"].size-token-button-composer.bg-composer-primary')].filter(button => {
+      if (!renderedComposerNode(button) || button.closest('form') !== form || button.hasAttribute('data-state')) return false;
+      const paths = button.querySelectorAll('svg path');
+      return paths.length === 1 && paths[0].getAttribute('d') === STOP_SQUARE_PATH;
+    });
+  }
+
   function stopButton() {
     return safe(() => {
-      const buttons = nativeComposerControls(STOP);
+      const buttons = stopControls();
       return buttons.length === 1 ? buttons[0] : null;
     }, null);
   }

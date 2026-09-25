@@ -3,6 +3,37 @@ import { JSDOM } from 'jsdom';
 import { expect, it } from 'vitest';
 import { prependUserPrompt, userPromptText, userPromptFrameHint } from '../src/shared/user-prompt.js';
 
+it('conceals escaped reserved headers without parsing frames or rewriting authored text', () => {
+  const page = new JSDOM('', { runScripts: 'outside-only' });
+  try {
+    page.window.eval(readFileSync('extension/chatgpt-dom.js', 'utf8'));
+    const api = (page.window as any).CLF_DOM;
+    const escape = (value: string) => value.replace(/([!-/:-@[-`{-~])/g, '\\$1').replace(/\n/g, '\\\n');
+    for (const identity of ['', '[[CLF-HANDOFF:token_0123456789abcdef]]\n\n', '[[CLF-RESUME:token_0123456789abcdef]]\n\n']) {
+      const value = escape(identity + '[[COS_CONTEXT:999]]\nIncomplete prefix');
+      for (const rendered of [false, true]) {
+        expect(userPromptFrameHint(value, rendered)).toBe(true);
+        expect(api.userPromptFrameHint(value, rendered)).toBe(true);
+      }
+      expect(userPromptText(value)).toBeNull();
+      expect(api.userPromptText(value)).toBeNull();
+      page.window.document.title = value;
+      const nativeTitle = page.window.document.title;
+      expect(api.conversationTitle()).toBe('');
+      expect(page.window.document.title).toBe(nativeTitle);
+    }
+    for (const value of ['Discuss ' + escape('[[COS_CONTEXT:99]]\n'), escape('[[COS_CONTEXT:9999999]]\n'),
+      '\\COS_CONTEXT:99', escape('[[COS_CONTEXT:99]]') + ' ordinary prose']) {
+      expect(userPromptFrameHint(value)).toBe(false);
+      expect(api.userPromptFrameHint(value)).toBe(false);
+    }
+    const authored = 'Keep C:\\_work, \\* and \\[ literally.';
+    const framed = prependUserPrompt(authored, 'Private instructions');
+    expect(userPromptText(framed)).toBe(authored);
+    expect(userPromptText(escape(framed))).toBeNull(); // Exact parser stays exact.
+  } finally { page.window.close(); }
+});
+
 it('conceals transport-shaped titles without changing the native title or accepting them as frames', () => {
   const page = new JSDOM('', { runScripts: 'outside-only' });
   try {

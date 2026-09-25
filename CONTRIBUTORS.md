@@ -120,6 +120,22 @@ added independently. Integration preserves Turkish and the existing language con
 drafts and preference storage. Validation is recorded in
 [the follow-up worklog](docs/worklog-2026-09-22-french-locale.md).
 
+The September 25 recovery hardening adapts [@Maximapple](https://github.com/Maximapple)'s
+unfinished-response requeue diagnosis from [#397](https://github.com/totec448-spec/chat-on-steroids/pull/397).
+Only automatically withdrawn, unsent rescues may be refiled under fresh ownership proof.
+Manual cancellation, failed/live attempts and authorized or receipted sends retain their
+existing fences; this does not incorporate the broader terminal-row allowance unchanged.
+The same block adapts their localized Stop diagnosis and structural targeting from
+[#405](https://github.com/totec448-spec/chat-on-steroids/pull/405), checked against a
+signed-in page and tightened to the exact observed SVG path and non-submit button.
+Regression coverage retains explicit selectors, rejects foreign/hidden/ambiguous
+controls and preserves the action-owner checks.
+Their escaped-frame diagnosis in [#401](https://github.com/totec448-spec/chat-on-steroids/pull/401)
+is adapted at the existing historical prefix reader and concealment hint only. The
+whole-message unescape proposal is not used: authored suffixes and the exact shared
+frame parser remain unchanged. An independent regression rejects length compensation
+by hard-break escapes in damaged frames.
+
 ## Reports, review and proposed work
 
 The September 22 selective review adapts [@lavalava45](https://github.com/lavalava45)'s

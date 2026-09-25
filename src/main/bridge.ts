@@ -3062,6 +3062,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         return json(res, 503, { error: 'continuation_not_durable', retryable: true, sessionId }, origin);
       }
       const { opened, started } = ticket;
+      // Idle source pages have no recorded active turn. Their latest native
+      // question still owns hydration: an empty loading DOM is not a new source.
+      const sourceQuestion = await readLatestUserMessage(sessionId);
+      const sourceSession = await getSession(sessionId);
+      if (sourceSession?.conversationId !== id || continuationForSession(sessionId)?.token !== opened.token)
+        return json(res, 409, { error: 'compaction_ticket_changed' }, origin);
       return json(
         res,
         202,
@@ -3071,6 +3077,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           sessionId,
           token: opened.token,
           sourceSend: opened.sourceSend,
+          sourceQuestionId: sourceQuestion?.messageId ?? null,
           prompt: null,
           job: resumeJobFor(sessionId)
         },
@@ -7919,7 +7926,8 @@ async function takePendingRepairs(
     if (!unclaimed) {
       repair.state = 'handed';
       repair.token = randomBytes(9).toString('base64url');
-      await updateRepairProgress(conversationId, repair, `Trying to reload chat to recover ${repairReason(repair)}…`);
+      if (!(repair.reason === 'compaction' && repair.episode.endsWith(':manual') && !repair.progress))
+        await updateRepairProgress(conversationId, repair, `Trying to reload chat to recover ${repairReason(repair)}…`);
     }
     // A missed pre-action claim may retry the same offer. Once claimed, ambiguous
     // acknowledgement keeps custody and cannot authorize a second browser action.
@@ -8021,7 +8029,9 @@ async function confirmRepair(token: string, action: 'reloaded' | 'reopened' | 'r
         if (repair.assistantSource) turnRepairSpent.set(conversationId,
           { sessionId: repair.sessionId, turnKey: repair.assistantSource.key, token: repair.token });
       }
-      await updateRepairProgress(
+      // Reaching the source for the initial desktop request is normal setup,
+      // not proof of a failure/recovery or of native composer readiness.
+      if (!(repair.reason === 'compaction' && repair.episode.endsWith(':manual') && !repair.progress)) await updateRepairProgress(
         conversationId,
         repair,
         `${action === 'resumed' ? 'Resumed' : action === 'reopened' ? 'Reopened' : 'Reloaded'} chat to recover ${repairReason(repair)}.`

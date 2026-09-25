@@ -1069,8 +1069,14 @@ export function fileRecoveryInput(sessionId: string, conversationId: string, tur
     const question = await readLatestUserMessage(sessionId, turnId);
     const [work] = await readRecentEvents(sessionId, 1, { kinds: RECOVERY_WORK_KINDS });
     if (!question?.messageId || !work || !currentOwner()) return false;
+    // Automatic withdrawal before Send did not answer the turn. It may be filed
+    // again under fresh source proof; manual cancellation and failed/live rows
+    // keep their existing veto. Any authorization or receipt is spent even when
+    // the row later becomes cancelled, including across recovery episodes.
     if (current.some(row => row.sessionId === sessionId && row.recovery && row.silenceBoundary?.turnId === turnId &&
-        (!row.recovery.episode || row.recovery.episode === episode || row.sendAuthorizedAt !== undefined))) return false;
+        (row.sendAuthorizedAt !== undefined || row.deliveredAt !== undefined || row.messageId ||
+          ((!row.recovery.episode || row.recovery.episode === episode) &&
+            (row.state !== 'cancelled' || row.cancelledByUser))))) return false;
     const now = Date.now();
     const row: InputEntry = { id: randomUUID(), sessionId, conversationId, owner: null, state: 'queued',
       mode: 'after-turn', dueAt: now, createdAt: now, model: null, reasoningEffort: null,

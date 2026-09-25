@@ -1032,6 +1032,11 @@ Mounted user rows and canonical-history publication resolve accepted input throu
 source. No intermediate history upsert may publish a serialized or incomplete private frame;
 checking only the final corrected row misses a visible leak. Pending DOM presentation may
 conceal a reserved header whose native BR boundaries collapsed, but cannot grant a receipt.
+Historical frame recovery also recognizes escaped delimiters. Their hard-break form selects
+one private-prefix decoder before checking the declared length; alternate decodings must not
+compensate for damaged content. Authored suffix bytes retain their provider representation.
+The exact shared frame parser and receipt owner/comparison rules remain unchanged. Incomplete
+escaped headers may conceal/quarantine only; they never publish a reconstructed message.
 The provider's provisional document title can contain that same prepared frame. It is not a
 conversation-name observation; omit it until a real title arrives. Native page text stays intact.
 An exact accepted fresh-chat receipt remains valid when native submit promotes its null
@@ -2222,6 +2227,10 @@ turn; exact Thinking failed uses the activity-based two/five-minute silence rule
 supersedes a stale transport banner and retains ordinary Goal/Loop eligibility.
 
 Automatic response recovery follows the shared decision and conditional busy wait above.
+An automatically withdrawn rescue with no Send authorization or delivery receipt does not
+permanently consume its source. Refiling still requires fresh current-owner/source proof and
+an empty live outbox. Manual cancellation and failed/live attempts retain their episode veto;
+any Send authorization or receipt remains spent across episodes, including after restart.
 Authored queue delivery retains its own input eligibility under §11 and takes precedence over
 a generated Continue or Goal/Loop message. A synthetic unfinished Goal decision is no longer
 filed automatically: recovery uses Continue until a canonical final appears.
@@ -2259,6 +2268,16 @@ the app does not manufacture a final answer or infer cancellation from a click/t
 The desktop logs admission with its exact session, conversation, turn and command. An empty
 or repeated form submit cannot request Stop: the submitting control must be the button while
 it displays Stop/Cancel. End turn only releases an Astra finish hold.
+The recorded Stop notice describes that historical request, not an indefinitely
+pending cancellation. Legacy app-owned notices drop the stale present-tense
+disclaimer at readback without changing their recorded facts or claiming provider success.
+
+The DOM adapter prefers the established Stop ids/labels. When none match, the
+current composer's primary non-submit button may be recognized by its exact
+observed square SVG path, without a translated-label allowlist. Hidden, foreign,
+popover and ambiguous controls cannot become action targets; the existing
+enabled/visible and current-turn checks still guard the click.
+
 Stop elects an existing exact tab, including a loading document, or opens the missing chat
 once under the same durable command. Its absolute two-minute deadline covers browser loading
 without renewing on retries. Browser election is saved before opening; lost receipts, navigation
@@ -2345,6 +2364,10 @@ long". Captured/claimed phases and an unobserved selection keep the ordinary ten
 An explicit desktop compaction immediately uses the existing exact-tab recovery path, which can
 open a missing source while Chrome is already running. It may replace an unclaimed ordinary
 repair, but cannot create a second browser action while another repair is already claimed.
+This initial source preparation does not emit a recovery incident; genuine preparation
+failures and later pickup episodes still do. The ticket reply supplies the latest recorded
+native question independently of an active turn, so an idle source waits for its history
+to hydrate before freezing its identity or preparing Send.
 Every compaction reload rechecks its original continuation token and phase at handout and the
 browser action claim. Cancellation, replacement, source dispatch and completed capture revoke
 obsolete pickup authority. Recovery text distinguishes an unsent request from an outstanding
@@ -2361,6 +2384,10 @@ requests retain their existing custody and cannot be sent again merely because a
 An unnamed destination never reports a successful resume ACK, even after a transport banner.
 Keep its armed dispatch and journal gate for exact marker reconciliation; a missing id plus
 generic timeout text is not proof of non-delivery and cannot authorize another Send.
+The command ACK and marked-message observation may arrive in either order. A late marked
+message may complete an already-dispatched checkpoint after commit only for the WAL's exact
+destination. It cannot reopen Send, replace a known message or move the session again.
+Conversely, a bound destination receipt vetoes an ACK naming a different chat.
 Continuation readback accepts one layer of Markdown escaping on ASCII punctuation, never
 escapes on letters/digits. Main/store/renderer and the unbundled content script must agree on
 the marker and preserve its exact removable span. Match an escaped marker separately from
