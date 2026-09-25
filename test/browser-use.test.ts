@@ -200,7 +200,10 @@ const fake = vi.hoisted(() => {
           options.width ?? width,
           options.height ?? height
         ),
-        toPNG: () => Buffer.from('fake-png')
+        toPNG: () => Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWPgEpH7D8IMMAYAJowE7bwlVOYAAAAASUVORK5CYII=',
+          'base64'
+        )
       });
       return Promise.resolve(image(rect?.width ?? 800, rect?.height ?? 600));
     }
@@ -1077,12 +1080,13 @@ it('owns Design inspection by active tab and document epoch and publishes only t
     viewport: { width: 800, height: 600 },
     selection: { id: 1, selector: '#save-button' },
     screenshot: {
-      name: 'browser-selection-button.png',
-      dataUrl: 'data:image/png;base64,ZmFrZS1wbmc=',
+      name: 'browser-selection-button.webp',
+      dataUrl: expect.stringMatching(/^data:image\/webp;base64,/),
       width: 120,
       height: 56
     }
   });
+  expect(Buffer.from(context.screenshot.dataUrl.split(',')[1]!, 'base64').subarray(8, 12).toString('ascii')).toBe('WEBP');
   const summaryCall = contents.debugger.calls.find(([method]: [string]) => method === 'Runtime.callFunctionOn');
   expect(summaryCall?.[1].functionDeclaration).toContain('getComputedStyle(element)');
   expect(summaryCall?.[1].functionDeclaration).toContain('"background-color"');

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, session, View, WebContentsView, type Session } from 'electron';
+import sharp from 'sharp';
 import type {
   BrowserUseBounds,
   BrowserUseDesignContext,
@@ -440,7 +441,7 @@ const DESIGN_CONTEXT_CROP_WIDTH = 640;
 const DESIGN_CONTEXT_CROP_HEIGHT = 360;
 const DESIGN_CONTEXT_OUTPUT_WIDTH = 560;
 const DESIGN_CONTEXT_OUTPUT_HEIGHT = 320;
-const DESIGN_CONTEXT_PNG_BYTES = 512 * 1024;
+const DESIGN_CONTEXT_IMAGE_BYTES = 512 * 1024;
 const DESIGN_SOURCE_CANDIDATES = 5;
 
 function designContextCrop(summary: {
@@ -1014,8 +1015,11 @@ export async function captureBrowserUseDesignContext(
       });
     }
     const outputSize = image.getSize();
-    const png = image.toPNG();
-    if (png.length > DESIGN_CONTEXT_PNG_BYTES) {
+    const webp = await sharp(image.toPNG(), {
+      limitInputPixels: DESIGN_CONTEXT_OUTPUT_WIDTH * DESIGN_CONTEXT_OUTPUT_HEIGHT,
+      animated: false
+    }).webp({ quality: 80 }).toBuffer();
+    if (webp.length > DESIGN_CONTEXT_IMAGE_BYTES) {
       throw new Error('The selected element preview is too large to attach. Select a smaller element.');
     }
     if (!current()) throw new Error('The selected element changed while its context was being prepared.');
@@ -1027,8 +1031,8 @@ export async function captureBrowserUseDesignContext(
       viewport: capture.viewport,
       selection,
       screenshot: {
-        name: `browser-selection-${selection.tag || 'element'}.png`,
-        dataUrl: `data:image/png;base64,${png.toString('base64')}`,
+        name: `browser-selection-${selection.tag || 'element'}.webp`,
+        dataUrl: `data:image/webp;base64,${webp.toString('base64')}`,
         width: outputSize.width,
         height: outputSize.height
       }

@@ -1494,7 +1494,7 @@ it('drafts a project Git review request without sending or replacing the compose
   expect(input.value).toBe(firstDraft);
 });
 
-it('adds selected Browser Use context to the composer only after Ask agent and never sends it', async () => {
+it('adds selected Browser Use context only after Ask agent and sends its normalized WebP on explicit submit', async () => {
   const app = await boot([]);
   const { w, live } = app;
   const api = (w as any).api;
@@ -1517,7 +1517,7 @@ it('adds selected Browser Use context to the composer only after Ask agent and n
   api.browserUseDesignContext = vi.fn(async () => ({ ok: true, data: {
     tabId: 7, selectionId: 17, url: 'https://example.com/settings', title: 'Settings',
     viewport: { width: 1280, height: 720 }, selection,
-    screenshot: { name: 'browser-selection-button.png', dataUrl: 'data:image/png;base64,ZmFrZS1wbmc=', width: 120, height: 56 }
+    screenshot: { name: 'browser-selection-button.webp', dataUrl: 'data:image/webp;base64,ZmFrZS13ZWJw', width: 120, height: 56 }
   } }));
 
   (w.document.getElementById('browserUseToggle') as HTMLButtonElement).click();
@@ -1539,9 +1539,17 @@ it('adds selected Browser Use context to the composer only after Ask agent and n
   expect(input.value).toContain('Selector: #save-button');
   expect(input.value).toContain('Probabilistic source candidates (verify before editing): React SaveButton: webpack:///src/SaveButton.tsx:24:7');
   expect(input.value).toContain('Requested change: ');
-  expect(w.document.querySelector<HTMLImageElement>('#composerImages img')?.alt).toBe('browser-selection-button.png');
+  expect(w.document.querySelector<HTMLImageElement>('#composerImages img')?.alt).toBe('browser-selection-button.webp');
   expect(w.document.activeElement).toBe(input);
   expect(live.sent).toEqual([]);
+
+  w.document.querySelector<HTMLFormElement>('#composer')!.requestSubmit();
+  await settle();
+  expect(live.sent).toHaveLength(1);
+  expect(live.sent[0]?.images).toEqual([{
+    name: 'browser-selection-button.webp',
+    dataUrl: 'data:image/webp;base64,ZmFrZS13ZWJw'
+  }]);
 });
 
 it.each([false, true])('removes a project group in one click, keeps its chats and draft, and rejects an older refresh (selectedSkill=%s)', async selectedSkill => {
