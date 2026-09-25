@@ -7,6 +7,7 @@ import { prependUserPrompt } from '../src/shared/user-prompt.js';
 import type { Handoff, SessionEvent, SessionSummary } from '../src/shared/session.js';
 import type { InputArgs, InputEntry } from '../src/main/session/input.js';
 import type { LocalProject } from '../src/shared/projects.js';
+import type { BrowserUseState } from '../src/shared/browser-use.js';
 vi.mock('../src/renderer/workspace-terminal.js', () => ({ createWorkspaceTerminal: () => ({ update: vi.fn() }) }));
 vi.mock('../src/renderer/pet.js', () => ({ initPet: () => () => {} }));
 vi.mock('../src/renderer/file-code-editor.js', () => ({
@@ -212,7 +213,12 @@ async function boot(events: SessionEvent[], selectExisting = true, pausedHelpers
   const live = { events: [...events], inputs: [] as InputEntry[], sent: [] as InputArgs[], copied: [] as string[], automation: 'off', controlCalls: [] as Array<{ id: string; action: string }>, compacting: false, finishHeld: true };
   let sessionListener: () => void = () => undefined;
   let writeSessionListener: (id: string) => void = () => undefined;
+  let browserStateListener: (state: BrowserUseState) => void = () => undefined;
   const taskProgressListeners = new Set<(progress: any) => void>();
+  let browserState: BrowserUseState = {
+    open: false, ready: false, agentActive: false, activeTabId: null, tabs: [], permission: null,
+    design: { active: false, tabId: null, selection: null }
+  };
   const api: any = new Proxy(
     {
       getState: () => ok(state),
@@ -230,6 +236,16 @@ async function boot(events: SessionEvent[], selectExisting = true, pausedHelpers
       draftGoalOpening: (text: string) => ok({ reply: `Start: ${text}`, model: 'fixture' }),
       onLogEntry: () => () => undefined,
       onSwarmChanged: () => () => undefined,
+      onBrowserUseShowRequested: () => () => undefined,
+      onBrowserUseStateChanged: (listener: (state: BrowserUseState) => void) => {
+        browserStateListener = listener;
+        return () => undefined;
+      },
+      browserUse: (request: { action: string }) => {
+        if (request.action === 'show') browserState = { ...browserState, open: true, ready: true };
+        if (request.action === 'hide') browserState = { ...browserState, open: false };
+        return ok(browserState);
+      },
       onSessionChanged: (fn: any) => {
         sessionListener = fn;
         return () => undefined;
@@ -316,6 +332,7 @@ async function boot(events: SessionEvent[], selectExisting = true, pausedHelpers
     live,
     notifySession: () => sessionListener(),
     writeSession: (id: string) => writeSessionListener(id),
+    browserState: (value: BrowserUseState) => { browserState = value; browserStateListener(value); },
     progress: (value: any) => { for (const listener of taskProgressListeners) listener(value); },
     async append(more: SessionEvent[]) {
       live.events.push(...more);
@@ -1475,6 +1492,56 @@ it('drafts a project Git review request without sending or replacing the compose
   const firstDraft = input.value;
   ask.click();
   expect(input.value).toBe(firstDraft);
+});
+
+it('adds selected Browser Use context to the composer only after Ask agent and never sends it', async () => {
+  const app = await boot([]);
+  const { w, live } = app;
+  const api = (w as any).api;
+  const selection = {
+    id: 17,
+    tag: 'button', role: 'button', name: 'Save changes', selector: '#save-button',
+    classes: ['btn', 'primary'], width: 96, height: 32,
+    boxModel: {
+      margin: ['0px', '0px', '0px', '0px'],
+      border: ['1px', '1px', '1px', '1px'],
+      padding: ['8px', '12px', '8px', '12px'],
+      contentWidth: 70, contentHeight: 14
+    },
+    styles: [{ property: 'display', value: 'flex' }, { property: 'color', value: 'rgb(255, 255, 255)' }],
+    sources: [{
+      kind: 'component', framework: 'React', label: 'SaveButton',
+      url: 'webpack:///src/SaveButton.tsx', line: 24, column: 7
+    }]
+  } as const;
+  api.browserUseDesignContext = vi.fn(async () => ({ ok: true, data: {
+    tabId: 7, selectionId: 17, url: 'https://example.com/settings', title: 'Settings',
+    viewport: { width: 1280, height: 720 }, selection,
+    screenshot: { name: 'browser-selection-button.png', dataUrl: 'data:image/png;base64,ZmFrZS1wbmc=', width: 120, height: 56 }
+  } }));
+
+  (w.document.getElementById('browserUseToggle') as HTMLButtonElement).click();
+  app.browserState({
+    open: true, ready: true, agentActive: false, activeTabId: 7, permission: null,
+    tabs: [{ id: 7, active: true, loading: false, title: 'Settings', url: 'https://example.com/settings', canGoBack: false, canGoForward: false }],
+    design: { active: true, tabId: 7, selection: selection as any }
+  });
+  await settle();
+  expect(w.document.querySelector('.browser-use-design-preview')).toBeNull();
+  expect(w.document.querySelector('#composerImages img')).toBeNull();
+
+  w.document.querySelector<HTMLButtonElement>('.browser-use-design-ask')!.click();
+  await settle();
+
+  const input = w.document.getElementById('chatInput') as HTMLTextAreaElement;
+  expect(api.browserUseDesignContext).toHaveBeenCalledWith(7, 17);
+  expect(input.value).toContain('I selected this interface element in Browser Use.');
+  expect(input.value).toContain('Selector: #save-button');
+  expect(input.value).toContain('Probabilistic source candidates (verify before editing): React SaveButton: webpack:///src/SaveButton.tsx:24:7');
+  expect(input.value).toContain('Requested change: ');
+  expect(w.document.querySelector<HTMLImageElement>('#composerImages img')?.alt).toBe('browser-selection-button.png');
+  expect(w.document.activeElement).toBe(input);
+  expect(live.sent).toEqual([]);
 });
 
 it.each([false, true])('removes a project group in one click, keeps its chats and draft, and rejects an older refresh (selectedSkill=%s)', async selectedSkill => {

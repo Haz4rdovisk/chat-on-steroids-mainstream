@@ -12,6 +12,9 @@ import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, session, View, WebContentsView, type Session } from 'electron';
 import type {
   BrowserUseBounds,
+  BrowserUseDesignContext,
+  BrowserUseDesignSelection,
+  BrowserUseDesignSourceCandidate,
   BrowserUseObservation,
   BrowserUsePermission,
   BrowserUseState,
@@ -55,6 +58,36 @@ interface PendingPermission {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface BrowserUseDesignOutlineState {
+  backendNodeId: number;
+  previous: {
+    outline: string;
+    outlinePriority: string;
+    outlineOffset: string;
+    outlineOffsetPriority: string;
+  };
+}
+
+interface BrowserUseDesignInspection {
+  tabId: number;
+  navigationEpoch: number;
+  generation: number;
+  selection: BrowserUseDesignSelection | null;
+  selectedBackendNodeId: number | null;
+  outline: BrowserUseDesignOutlineState | null;
+  cssEnabled: boolean;
+  styleSheets: Map<string, {
+    sourceURL: string;
+    startLine: number;
+    startColumn: number;
+  }>;
+  capture: {
+    selectionId: number;
+    crop: BrowserUseBounds;
+    viewport: { width: number; height: number };
+  } | null;
+}
+
 let owner: BrowserWindow | null = null;
 let browserSession: Session | null = null;
 let ready: Promise<void> | null = null;
@@ -76,6 +109,9 @@ const agentCursorPendingCompletion = new Set<number>();
 const activePointerGestures = new Map<number, AbortController>();
 let agentMissionActive = false;
 let agentMissionIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let designInspection: BrowserUseDesignInspection | null = null;
+let designInspectionGeneration = 0;
+let nextDesignSelectionId = 1;
 
 const AGENT_MISSION_IDLE_TIMEOUT_MS = 5 * 60_000;
 const AGENT_MISSION_FINISH_GRACE_MS = 360;
@@ -166,7 +202,12 @@ export function browserUseState(): BrowserUseState {
     agentActive: agentMissionActive,
     activeTabId,
     tabs: [...tabs.values()].filter(tab => !tab.retired).map(tabState),
-    permission: pendingPermission?.request ?? null
+    permission: pendingPermission?.request ?? null,
+    design: {
+      active: designInspection !== null,
+      tabId: designInspection?.tabId ?? null,
+      selection: designInspection?.selection ?? null
+    }
   };
 }
 
@@ -372,6 +413,710 @@ function setPanelBounds(bounds: BrowserUseBounds): void {
   for (const tab of tabs.values()) invalidate(tab);
 }
 
+const DESIGN_HIGHLIGHT_CONFIG = {
+  showInfo: true,
+  showAccessibilityInfo: true,
+  contentColor: { r: 76, g: 139, b: 245, a: 0.12 },
+  paddingColor: { r: 76, g: 139, b: 245, a: 0.18 },
+  borderColor: { r: 99, g: 157, b: 255, a: 0.9 },
+  marginColor: { r: 99, g: 157, b: 255, a: 0.08 }
+};
+const DESIGN_STYLE_PROPERTIES = [
+  'display',
+  'position',
+  'color',
+  'background-color',
+  'font-family',
+  'font-size',
+  'font-weight',
+  'line-height',
+  'border-radius',
+  'gap',
+  'opacity',
+  'z-index'
+] as const;
+const DESIGN_STYLE_PROPERTY_SET = new Set<string>(DESIGN_STYLE_PROPERTIES);
+const DESIGN_CONTEXT_CROP_WIDTH = 640;
+const DESIGN_CONTEXT_CROP_HEIGHT = 360;
+const DESIGN_CONTEXT_OUTPUT_WIDTH = 560;
+const DESIGN_CONTEXT_OUTPUT_HEIGHT = 320;
+const DESIGN_CONTEXT_PNG_BYTES = 512 * 1024;
+const DESIGN_SOURCE_CANDIDATES = 5;
+
+function designContextCrop(summary: {
+  x?: unknown;
+  y?: unknown;
+  width?: unknown;
+  height?: unknown;
+  viewportWidth?: unknown;
+  viewportHeight?: unknown;
+}): BrowserUseBounds | null {
+  const bounded = (value: unknown, minimum: number, maximum: number): number =>
+    typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(minimum, Math.min(maximum, value))
+      : minimum;
+  const viewportWidth = bounded(summary.viewportWidth, 0, 100_000);
+  const viewportHeight = bounded(summary.viewportHeight, 0, 100_000);
+  if (viewportWidth < 1 || viewportHeight < 1) return null;
+  const x = bounded(summary.x, -100_000, 100_000);
+  const y = bounded(summary.y, -100_000, 100_000);
+  const width = bounded(summary.width, 0, 100_000);
+  const height = bounded(summary.height, 0, 100_000);
+  const left = Math.max(0, Math.min(viewportWidth, x - 12));
+  const top = Math.max(0, Math.min(viewportHeight, y - 12));
+  const right = Math.max(left, Math.min(viewportWidth, x + width + 12));
+  const bottom = Math.max(top, Math.min(viewportHeight, y + height + 12));
+  const cropWidth = Math.min(DESIGN_CONTEXT_CROP_WIDTH, right - left);
+  const cropHeight = Math.min(DESIGN_CONTEXT_CROP_HEIGHT, bottom - top);
+  if (cropWidth < 1 || cropHeight < 1) return null;
+  const centerX = Math.max(0, Math.min(viewportWidth, x + width / 2));
+  const centerY = Math.max(0, Math.min(viewportHeight, y + height / 2));
+  return {
+    x: Math.round(Math.max(0, Math.min(viewportWidth - cropWidth, centerX - cropWidth / 2))),
+    y: Math.round(Math.max(0, Math.min(viewportHeight - cropHeight, centerY - cropHeight / 2))),
+    width: Math.max(1, Math.round(cropWidth)),
+    height: Math.max(1, Math.round(cropHeight))
+  };
+}
+
+async function stopDesignInspectionOnPage(
+  tab: BrowserUseTab,
+  inspection: BrowserUseDesignInspection | null = designInspection
+): Promise<void> {
+  if (tab.retired || tab.view.webContents.isDestroyed()) return;
+  await tab.ready;
+  let outlineRemoved = false;
+  if (inspection?.tabId === tab.id) {
+    try {
+      await restoreDesignSelectionOutline(tab, inspection);
+      outlineRemoved = true;
+    } catch (error) {
+      logWarn(`browser use design outline cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  // Overlay.disable is the backend's teardown boundary: it clears inspect mode, destroys the
+  // overlay page and releases unbuffered input. Merely hiding the highlight can leave the page
+  // intercepting pointer input while the renderer already claims inspection is off.
+  try {
+    await tab.view.webContents.debugger.sendCommand('Overlay.disable');
+  } catch (error) {
+    // An explicit toggle-off remains visibly active if native teardown fails. Restore the
+    // selected contour too so renderer and page continue to project that truthful state.
+    if (outlineRemoved && inspection && currentDesignInspection(tab, inspection) &&
+        typeof inspection.selectedBackendNodeId === 'number') {
+      try {
+        await applyDesignSelectionOutline(tab, inspection, inspection.selectedBackendNodeId);
+      } catch { /* Preserve the original teardown error. */ }
+    }
+    throw error;
+  }
+  if (inspection?.cssEnabled && !tab.view.webContents.isDestroyed()) {
+    try {
+      await tab.view.webContents.debugger.sendCommand('CSS.disable');
+      inspection.cssEnabled = false;
+      inspection.styleSheets.clear();
+    } catch (error) {
+      logWarn(`browser use design CSS cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+function retireDesignInspection(tabId?: number, publish = true): BrowserUseTab | null {
+  const current = designInspection;
+  if (!current || (tabId !== undefined && current.tabId !== tabId)) return null;
+  designInspectionGeneration += 1;
+  designInspection = null;
+  const tab = tabs.get(current.tabId);
+  if (publish) publishState();
+  return tab ?? null;
+}
+
+function clearDesignInspection(tabId?: number, publish = true): void {
+  const inspection = designInspection;
+  const tab = retireDesignInspection(tabId, publish);
+  // Lifecycle edges such as navigation can destroy the target before cleanup completes. They
+  // retire ownership synchronously and make native teardown best-effort; explicit toggle-off
+  // uses the strict awaited path in setBrowserUseDesignMode instead.
+  if (tab && inspection) void stopDesignInspectionOnPage(tab, inspection).catch(() => undefined);
+}
+
+function currentDesignInspection(
+  tab: BrowserUseTab,
+  expected: BrowserUseDesignInspection
+): boolean {
+  return designInspection === expected &&
+    expected.tabId === tab.id &&
+    expected.navigationEpoch === tab.navigationEpoch &&
+    expected.generation === designInspectionGeneration &&
+    !tab.retired;
+}
+
+const DESIGN_SELECTION_OUTLINE_FUNCTION = String.raw`function () {
+  const style = this && this.style;
+  if (!style || typeof style.setProperty !== 'function') return null;
+  const previous = {
+    outline: style.getPropertyValue('outline'),
+    outlinePriority: style.getPropertyPriority('outline'),
+    outlineOffset: style.getPropertyValue('outline-offset'),
+    outlineOffsetPriority: style.getPropertyPriority('outline-offset')
+  };
+  style.setProperty('outline', '2px solid rgb(99, 157, 255)', 'important');
+  style.setProperty('outline-offset', '2px', 'important');
+  return previous;
+}`;
+
+const DESIGN_SELECTION_RESTORE_FUNCTION = String.raw`function (outline, outlinePriority, outlineOffset, outlineOffsetPriority) {
+  const style = this && this.style;
+  if (!style || typeof style.setProperty !== 'function') return false;
+  const restore = (property, value, priority) => value
+    ? style.setProperty(property, value, priority || '')
+    : style.removeProperty(property);
+  restore('outline', outline, outlinePriority);
+  restore('outline-offset', outlineOffset, outlineOffsetPriority);
+  return true;
+}`;
+
+async function applyDesignSelectionOutline(
+  tab: BrowserUseTab,
+  inspection: BrowserUseDesignInspection,
+  backendNodeId: number
+): Promise<void> {
+  if (!currentDesignInspection(tab, inspection)) return;
+  if (inspection.outline?.backendNodeId === backendNodeId) return;
+  if (inspection.outline) await restoreDesignSelectionOutline(tab, inspection);
+  const resolved = await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+    tab.view.webContents.debugger.sendCommand('DOM.resolveNode', {
+      backendNodeId,
+      objectGroup: 'cos-browser-use-design-outline'
+    })
+  ) as { object?: { objectId?: string } };
+  const objectId = resolved.object?.objectId;
+  if (!objectId || !currentDesignInspection(tab, inspection)) return;
+  try {
+    const reply = await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+      tab.view.webContents.debugger.sendCommand('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: DESIGN_SELECTION_OUTLINE_FUNCTION,
+        returnByValue: true
+      })
+    ) as { result?: { value?: BrowserUseDesignOutlineState['previous'] | null } };
+    const previous = reply.result?.value;
+    if (!previous || !currentDesignInspection(tab, inspection)) {
+      throw new Error('The selected element cannot display an outline.');
+    }
+    inspection.outline = { backendNodeId, previous };
+  } finally {
+    if (!tab.view.webContents.isDestroyed()) {
+      void tab.view.webContents.debugger.sendCommand('Runtime.releaseObject', { objectId }).catch(() => undefined);
+    }
+  }
+}
+
+async function restoreDesignSelectionOutline(
+  tab: BrowserUseTab,
+  inspection: BrowserUseDesignInspection
+): Promise<void> {
+  const outline = inspection.outline;
+  if (!outline) return;
+  if (inspection.navigationEpoch !== tab.navigationEpoch || tab.retired ||
+      tab.view.webContents.isDestroyed()) {
+    inspection.outline = null;
+    return;
+  }
+  const resolved = await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+    tab.view.webContents.debugger.sendCommand('DOM.resolveNode', {
+      backendNodeId: outline.backendNodeId,
+      objectGroup: 'cos-browser-use-design-outline'
+    })
+  ) as { object?: { objectId?: string } };
+  const objectId = resolved.object?.objectId;
+  if (!objectId) {
+    inspection.outline = null;
+    return;
+  }
+  try {
+    const previous = outline.previous;
+    await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+      tab.view.webContents.debugger.sendCommand('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: DESIGN_SELECTION_RESTORE_FUNCTION,
+        arguments: [
+          { value: previous.outline },
+          { value: previous.outlinePriority },
+          { value: previous.outlineOffset },
+          { value: previous.outlineOffsetPriority }
+        ],
+        returnByValue: true
+      })
+    );
+    if (inspection.outline === outline) inspection.outline = null;
+  } finally {
+    if (!tab.view.webContents.isDestroyed()) {
+      void tab.view.webContents.debugger.sendCommand('Runtime.releaseObject', { objectId }).catch(() => undefined);
+    }
+  }
+}
+
+const DESIGN_NODE_SUMMARY_FUNCTION = String.raw`function () {
+  const element = this instanceof Element ? this : this && this.parentElement;
+  if (!element) return null;
+  const escape = value => globalThis.CSS && typeof CSS.escape === 'function'
+    ? CSS.escape(value)
+    : value.replace(/[^a-zA-Z0-9_-]/g, character => '\\' + character);
+  const segment = node => {
+    const tag = node.tagName.toLowerCase();
+    if (node.id) return '#' + escape(node.id);
+    const classes = Array.from(node.classList).filter(Boolean).slice(0, 2);
+    let value = tag + classes.map(name => '.' + escape(name)).join('');
+    const parent = node.parentElement;
+    if (parent) {
+      const peers = Array.from(parent.children).filter(child => child.tagName === node.tagName);
+      if (peers.length > 1) value += ':nth-of-type(' + (peers.indexOf(node) + 1) + ')';
+    }
+    return value;
+  };
+  const parts = [];
+  let cursor = element;
+  while (cursor && parts.length < 6) {
+    const part = segment(cursor);
+    parts.unshift(part);
+    if (part.startsWith('#')) break;
+    cursor = cursor.parentElement;
+  }
+  const rect = element.getBoundingClientRect();
+  const computed = getComputedStyle(element);
+  const edge = properties => properties.map(property => computed.getPropertyValue(property).trim().slice(0, 80));
+  const margin = edge(['margin-top', 'margin-right', 'margin-bottom', 'margin-left']);
+  const border = edge(['border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width']);
+  const padding = edge(['padding-top', 'padding-right', 'padding-bottom', 'padding-left']);
+  const pixels = value => {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const styleProperties = __STYLE_PROPERTIES__;
+  const sources = [];
+  const pushSource = (framework, label, fileName, lineNumber, columnNumber) => {
+    if (typeof fileName !== 'string' || !fileName.trim() || sources.length >= 4) return;
+    sources.push({
+      framework,
+      label: typeof label === 'string' ? label : '',
+      fileName,
+      lineNumber,
+      columnNumber
+    });
+  };
+  try {
+    const fiberKey = Object.getOwnPropertyNames(element).find(key =>
+      key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+    );
+    const descriptor = fiberKey ? Object.getOwnPropertyDescriptor(element, fiberKey) : null;
+    let fiber = descriptor && 'value' in descriptor ? descriptor.value : null;
+    for (let depth = 0; fiber && depth < 16 && sources.length < 3; depth += 1, fiber = fiber.return) {
+      const source = fiber._debugSource;
+      const type = fiber.elementType || fiber.type;
+      const label = typeof type === 'string' ? type
+        : type && (type.displayName || type.name) || fiber._debugOwner?.elementType?.displayName || '';
+      if (source && typeof source === 'object') {
+        pushSource('React', label, source.fileName, source.lineNumber, source.columnNumber);
+      }
+    }
+  } catch { /* Framework metadata is optional and never blocks selection. */ }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(element, '__vueParentComponent');
+    let instance = descriptor && 'value' in descriptor ? descriptor.value : null;
+    for (let depth = 0; instance && depth < 12 && sources.length < 4; depth += 1, instance = instance.parent) {
+      const type = instance.type;
+      if (type && typeof type === 'object') {
+        pushSource('Vue', type.name || type.__name || '', type.__file, null, null);
+      }
+    }
+  } catch { /* Framework metadata is optional and never blocks selection. */ }
+  return {
+    tag: element.tagName.toLowerCase().slice(0, 64),
+    explicitRole: (element.getAttribute('role') || '').trim().slice(0, 80),
+    selector: parts.join(' > ').slice(0, 512),
+    classes: Array.from(element.classList).slice(0, 16).map(value => value.slice(0, 80)),
+    width: Math.round(rect.width * 10) / 10,
+    height: Math.round(rect.height * 10) / 10,
+    x: Math.round(rect.x * 10) / 10,
+    y: Math.round(rect.y * 10) / 10,
+    viewportWidth: innerWidth,
+    viewportHeight: innerHeight,
+    boxModel: {
+      margin,
+      border,
+      padding,
+      contentWidth: Math.max(0, Math.round((rect.width - pixels(border[1]) - pixels(border[3]) - pixels(padding[1]) - pixels(padding[3])) * 10) / 10),
+      contentHeight: Math.max(0, Math.round((rect.height - pixels(border[0]) - pixels(border[2]) - pixels(padding[0]) - pixels(padding[2])) * 10) / 10)
+    },
+    styles: styleProperties.map(property => ({
+      property,
+      value: computed.getPropertyValue(property).trim().replace(/\s+/g, ' ').slice(0, 160)
+    })),
+    sources
+  };
+}`.replace('__STYLE_PROPERTIES__', JSON.stringify(DESIGN_STYLE_PROPERTIES));
+
+function boundedDesignSourceCandidates(value: unknown): BrowserUseDesignSourceCandidate[] {
+  if (!Array.isArray(value)) return [];
+  const result: BrowserUseDesignSourceCandidate[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const framework = record.framework === 'React' || record.framework === 'Vue' || record.framework === 'CSS'
+      ? record.framework
+      : null;
+    const urlValue = typeof record.url === 'string' ? record.url : record.fileName;
+    const url = typeof urlValue === 'string' ? urlValue.trim().replace(/[\r\n\t]/g, '').slice(0, 2048) : '';
+    if (!framework || !url) continue;
+    const position = (candidate: unknown, maximum: number): number | null =>
+      typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 1
+        ? Math.min(candidate, maximum)
+        : null;
+    const line = position(record.line ?? record.lineNumber, 10_000_000);
+    const column = position(record.column ?? record.columnNumber, 1_000_000);
+    const label = typeof record.label === 'string'
+      ? record.label.trim().replace(/\s+/g, ' ').slice(0, 120)
+      : '';
+    const kind = framework === 'CSS' ? 'style' : 'component';
+    const key = `${kind}\0${url}\0${line ?? ''}\0${column ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ kind, framework, label, url, line, column });
+    if (result.length >= DESIGN_SOURCE_CANDIDATES) break;
+  }
+  return result;
+}
+
+async function matchedDesignStyleSources(
+  tab: BrowserUseTab,
+  inspection: BrowserUseDesignInspection,
+  objectId: string
+): Promise<BrowserUseDesignSourceCandidate[]> {
+  if (!inspection.cssEnabled || !currentDesignInspection(tab, inspection)) return [];
+  try {
+    const requested = await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+      tab.view.webContents.debugger.sendCommand('DOM.requestNode', { objectId })
+    ) as { nodeId?: unknown };
+    if (typeof requested.nodeId !== 'number' || !Number.isInteger(requested.nodeId) || requested.nodeId < 1) return [];
+    const matched = await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+      tab.view.webContents.debugger.sendCommand('CSS.getMatchedStylesForNode', { nodeId: requested.nodeId })
+    ) as {
+      matchedCSSRules?: Array<{
+        rule?: {
+          origin?: unknown;
+          styleSheetId?: unknown;
+          selectorList?: { text?: unknown };
+          style?: {
+            styleSheetId?: unknown;
+            range?: { startLine?: unknown; startColumn?: unknown };
+          };
+        };
+      }>;
+    };
+    const raw: Array<Record<string, unknown>> = [];
+    for (const match of matched.matchedCSSRules ?? []) {
+      const rule = match.rule;
+      if (!rule || rule.origin !== 'regular') continue;
+      const styleSheetId = typeof rule.styleSheetId === 'string'
+        ? rule.styleSheetId
+        : typeof rule.style?.styleSheetId === 'string' ? rule.style.styleSheetId : '';
+      const header = inspection.styleSheets.get(styleSheetId);
+      const range = rule.style?.range;
+      if (!header || !range || typeof range.startLine !== 'number' || typeof range.startColumn !== 'number') continue;
+      const sourceURL = header.sourceURL || tab.url;
+      if (!sourceURL) continue;
+      const lineOffset = Math.max(0, Math.trunc(range.startLine));
+      raw.push({
+        framework: 'CSS',
+        label: typeof rule.selectorList?.text === 'string' ? rule.selectorList.text : '',
+        url: sourceURL,
+        line: header.startLine + lineOffset + 1,
+        column: (lineOffset === 0 ? header.startColumn : 0) + Math.max(0, Math.trunc(range.startColumn)) + 1
+      });
+      if (raw.length >= DESIGN_SOURCE_CANDIDATES) break;
+    }
+    return boundedDesignSourceCandidates(raw);
+  } catch {
+    // Source hints are optional evidence and must never make selection itself fail.
+    return [];
+  }
+}
+
+async function captureDesignSelection(
+  tab: BrowserUseTab,
+  inspection: BrowserUseDesignInspection,
+  backendNodeId: number
+): Promise<void> {
+  const epoch = inspection.navigationEpoch;
+  let objectId: string | undefined;
+  try {
+    const [ax, resolved] = await Promise.all([
+      runDocumentCommand(tab, epoch, () =>
+        tab.view.webContents.debugger.sendCommand('Accessibility.getPartialAXTree', {
+          backendNodeId,
+          fetchRelatives: false
+        })
+      ) as Promise<{ nodes?: Array<{ role?: { value?: unknown }; name?: { value?: unknown } }> }>,
+      runDocumentCommand(tab, epoch, () =>
+        tab.view.webContents.debugger.sendCommand('DOM.resolveNode', {
+          backendNodeId,
+          objectGroup: 'cos-browser-use-design'
+        })
+      ) as Promise<{ object?: { objectId?: string } }>
+    ]);
+    objectId = resolved.object?.objectId;
+    if (!objectId || !currentDesignInspection(tab, inspection)) return;
+    const summaryReply = await runDocumentCommand(tab, epoch, () =>
+      tab.view.webContents.debugger.sendCommand('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: DESIGN_NODE_SUMMARY_FUNCTION,
+        returnByValue: true
+      })
+    ) as {
+      result?: {
+        value?: {
+          tag?: unknown;
+          explicitRole?: unknown;
+          selector?: unknown;
+          classes?: unknown;
+          width?: unknown;
+          height?: unknown;
+          x?: unknown;
+          y?: unknown;
+          viewportWidth?: unknown;
+          viewportHeight?: unknown;
+          boxModel?: {
+            margin?: unknown;
+            border?: unknown;
+            padding?: unknown;
+            contentWidth?: unknown;
+            contentHeight?: unknown;
+          } | null;
+          styles?: unknown;
+          sources?: unknown;
+        } | null;
+      };
+    };
+    const summary = summaryReply.result?.value;
+    if (!summary || !currentDesignInspection(tab, inspection)) return;
+    const crop = designContextCrop(summary);
+    const sources = boundedDesignSourceCandidates(summary.sources);
+    const styleSources = await matchedDesignStyleSources(tab, inspection, objectId);
+    if (!currentDesignInspection(tab, inspection)) return;
+    const selectionId = nextDesignSelectionId++;
+    const axNode = ax.nodes?.[0];
+    const role = typeof axNode?.role?.value === 'string'
+      ? axNode.role.value
+      : typeof summary.explicitRole === 'string' ? summary.explicitRole : '';
+    const name = typeof axNode?.name?.value === 'string' ? axNode.name.value : '';
+    const dimension = (value: unknown): number => typeof value === 'number' && Number.isFinite(value)
+      ? Math.round(Math.max(0, Math.min(100_000, value)) * 10) / 10
+      : 0;
+    const edge = (value: unknown): [string, string, string, string] => {
+      const entries = Array.isArray(value) ? value : [];
+      return [0, 1, 2, 3].map(index => typeof entries[index] === 'string'
+        ? entries[index].trim().replace(/\s+/g, ' ').slice(0, 80)
+        : '0px') as [string, string, string, string];
+    };
+    const boxModel = summary.boxModel;
+    inspection.selection = {
+      id: selectionId,
+      tag: typeof summary.tag === 'string' ? summary.tag : '',
+      role: role.slice(0, 80),
+      name: name.trim().replace(/\s+/g, ' ').slice(0, 240),
+      selector: typeof summary.selector === 'string' ? summary.selector.slice(0, 512) : '',
+      classes: Array.isArray(summary.classes) ? summary.classes
+        .filter((value): value is string => typeof value === 'string')
+        .slice(0, 16)
+        .map(value => value.trim().slice(0, 80))
+        .filter(Boolean) : [],
+      width: dimension(summary.width),
+      height: dimension(summary.height),
+      boxModel: {
+        margin: edge(boxModel?.margin),
+        border: edge(boxModel?.border),
+        padding: edge(boxModel?.padding),
+        contentWidth: dimension(boxModel?.contentWidth),
+        contentHeight: dimension(boxModel?.contentHeight)
+      },
+      styles: Array.isArray(summary.styles) ? summary.styles.flatMap(entry => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+        const property = 'property' in entry && typeof entry.property === 'string' ? entry.property : '';
+        const value = 'value' in entry && typeof entry.value === 'string' ? entry.value : '';
+        if (!DESIGN_STYLE_PROPERTY_SET.has(property)) return [];
+        return [{ property, value: value.trim().replace(/\s+/g, ' ').slice(0, 160) }];
+      }).slice(0, DESIGN_STYLE_PROPERTIES.length) : [],
+      sources: boundedDesignSourceCandidates([...sources, ...styleSources])
+    };
+    const viewportWidth = dimension(summary.viewportWidth);
+    const viewportHeight = dimension(summary.viewportHeight);
+    inspection.capture = crop && viewportWidth > 0 && viewportHeight > 0
+      ? { selectionId, crop, viewport: { width: viewportWidth, height: viewportHeight } }
+      : null;
+    inspection.selectedBackendNodeId = backendNodeId;
+    await applyDesignSelectionOutline(tab, inspection, backendNodeId);
+    if (!currentDesignInspection(tab, inspection)) return;
+    publishState();
+  } catch (error) {
+    if (currentDesignInspection(tab, inspection)) {
+      logWarn(`browser use design selection: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } finally {
+    if (objectId && !tab.view.webContents.isDestroyed()) {
+      void tab.view.webContents.debugger.sendCommand('Runtime.releaseObject', { objectId }).catch(() => undefined);
+    }
+  }
+}
+
+/** Capture is deliberately user-triggered. Selection itself stays cheap and the renderer never
+ * receives screenshot bytes until the user explicitly asks to prepare agent context. */
+export async function captureBrowserUseDesignContext(
+  tabId: number,
+  selectionId: number
+): Promise<BrowserUseDesignContext> {
+  const tab = requireTab(tabId);
+  const inspection = designInspection;
+  if (!inspection || inspection.tabId !== tabId || inspection.navigationEpoch !== tab.navigationEpoch ||
+      inspection.selection?.id !== selectionId) {
+    throw new Error('The selected element changed. Select it again before asking the agent.');
+  }
+  if (!inspection.capture || inspection.capture.selectionId !== selectionId) {
+    throw new Error('The selected element is outside the visible page. Select a visible element before asking the agent.');
+  }
+  if (activeTabId !== tabId) throw new Error('Select the inspected tab before asking the agent.');
+  const selection = inspection.selection;
+  const capture = inspection.capture;
+  const backendNodeId = inspection.selectedBackendNodeId;
+  const current = (): boolean => currentDesignInspection(tab, inspection) &&
+    inspection.selection?.id === selectionId && inspection.capture?.selectionId === selectionId;
+  try {
+    await restoreDesignSelectionOutline(tab, inspection);
+    await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+      tab.view.webContents.debugger.sendCommand('Overlay.hideHighlight')
+    );
+    let image = await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+      tab.view.webContents.capturePage(capture.crop)
+    );
+    if (!current()) throw new Error('The selected element changed while its context was being prepared.');
+    const size = image.getSize();
+    const scale = Math.min(
+      1,
+      DESIGN_CONTEXT_OUTPUT_WIDTH / Math.max(1, size.width),
+      DESIGN_CONTEXT_OUTPUT_HEIGHT / Math.max(1, size.height)
+    );
+    if (scale < 1) {
+      image = image.resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale)),
+        quality: 'good'
+      });
+    }
+    const outputSize = image.getSize();
+    const png = image.toPNG();
+    if (png.length > DESIGN_CONTEXT_PNG_BYTES) {
+      throw new Error('The selected element preview is too large to attach. Select a smaller element.');
+    }
+    if (!current()) throw new Error('The selected element changed while its context was being prepared.');
+    return {
+      tabId,
+      selectionId,
+      url: tab.url,
+      title: tab.title,
+      viewport: capture.viewport,
+      selection,
+      screenshot: {
+        name: `browser-selection-${selection.tag || 'element'}.png`,
+        dataUrl: `data:image/png;base64,${png.toString('base64')}`,
+        width: outputSize.width,
+        height: outputSize.height
+      }
+    };
+  } finally {
+    // Keep the selection visually anchored after preparing context, but never burn our own
+    // inline contour into the screenshot sent to the composer.
+    if (backendNodeId !== null && current()) {
+      try {
+        await applyDesignSelectionOutline(tab, inspection, backendNodeId);
+      } catch (error) {
+        if (current()) {
+          logWarn(`browser use design outline restore: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+  }
+}
+
+export async function setBrowserUseDesignMode(
+  tabId: number,
+  enabled: boolean
+): Promise<BrowserUseState> {
+  const tab = requireTab(tabId);
+  if (!enabled) {
+    const inspection = designInspection;
+    if (!inspection || inspection.tabId !== tabId) return browserUseState();
+    await stopDesignInspectionOnPage(tab, inspection);
+    if (designInspection === inspection) retireDesignInspection(tabId);
+    return browserUseState();
+  }
+  if (activeTabId !== tabId) throw new Error('Select the tab before inspecting its design.');
+  if (designInspection?.tabId === tabId && designInspection.navigationEpoch === tab.navigationEpoch) {
+    return browserUseState();
+  }
+  clearDesignInspection(undefined, false);
+  const generation = ++designInspectionGeneration;
+  const inspection: BrowserUseDesignInspection = {
+    tabId,
+    navigationEpoch: tab.navigationEpoch,
+    generation,
+    selection: null,
+    selectedBackendNodeId: null,
+    outline: null,
+    cssEnabled: false,
+    styleSheets: new Map(),
+    capture: null
+  };
+  try {
+    await tab.ready;
+    if (generation !== designInspectionGeneration || activeTabId !== tabId ||
+        tab.navigationEpoch !== inspection.navigationEpoch) return browserUseState();
+    designInspection = inspection;
+    try {
+      await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+        tab.view.webContents.debugger.sendCommand('CSS.enable')
+      );
+      inspection.cssEnabled = true;
+    } catch {
+      // Component metadata still provides useful source candidates when a page has no CSS model.
+    }
+    await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+      tab.view.webContents.debugger.sendCommand('Overlay.enable')
+    );
+    if (generation !== designInspectionGeneration || activeTabId !== tabId) return browserUseState();
+    await runDocumentCommand(tab, inspection.navigationEpoch, () =>
+      tab.view.webContents.debugger.sendCommand('Overlay.setInspectMode', {
+        mode: 'searchForNode',
+        highlightConfig: DESIGN_HIGHLIGHT_CONFIG
+      })
+    );
+    if (!currentDesignInspection(tab, inspection)) {
+      void stopDesignInspectionOnPage(tab, inspection).catch(() => undefined);
+      return browserUseState();
+    }
+    publishState();
+    return browserUseState();
+  } catch (error) {
+    if (designInspection === inspection) {
+      designInspection = null;
+      designInspectionGeneration += 1;
+      publishState();
+    }
+    void stopDesignInspectionOnPage(tab, inspection).catch(() => undefined);
+    throw error;
+  }
+}
+
 async function initializeTab(tab: BrowserUseTab): Promise<void> {
   const contents = tab.view.webContents;
   if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
@@ -389,6 +1134,7 @@ function setActive(tab: BrowserUseTab): void {
   // effect. Layout changes and window recreation already call applyPanel() at their own edges.
   if (activeTabId === tab.id) return;
   const previous = activeTabId === null ? null : tabs.get(activeTabId) ?? null;
+  clearDesignInspection(undefined, false);
   activeTabId = tab.id;
   applyPanel();
   publishState();
@@ -400,6 +1146,7 @@ function setActive(tab: BrowserUseTab): void {
 
 function retireTab(tab: BrowserUseTab): void {
   if (tab.retired) return;
+  clearDesignInspection(tab.id, false);
   tab.retired = true;
   tab.documentLifetime.abort();
   agentCursorTabs.delete(tab.id);
@@ -426,6 +1173,31 @@ function retireTab(tab: BrowserUseTab): void {
 
 function wireTab(tab: BrowserUseTab): void {
   const contents = tab.view.webContents;
+  contents.debugger.on('message', (_event, method, params) => {
+    if (method === 'CSS.styleSheetAdded') {
+      const inspection = designInspection;
+      const header = (params as { header?: Record<string, unknown> } | undefined)?.header;
+      if (!inspection || inspection.tabId !== tab.id || inspection.navigationEpoch !== tab.navigationEpoch ||
+          !header || typeof header.styleSheetId !== 'string') return;
+      inspection.styleSheets.set(header.styleSheetId, {
+        sourceURL: typeof header.sourceURL === 'string' ? header.sourceURL.slice(0, 2048) : '',
+        startLine: typeof header.startLine === 'number' ? Math.max(0, Math.trunc(header.startLine)) : 0,
+        startColumn: typeof header.startColumn === 'number' ? Math.max(0, Math.trunc(header.startColumn)) : 0
+      });
+      return;
+    }
+    if (method === 'Overlay.inspectModeCanceled') {
+      // Chromium owns picker cancellation; our owner still removes the selected inline contour.
+      clearDesignInspection(tab.id);
+      return;
+    }
+    if (method !== 'Overlay.inspectNodeRequested') return;
+    const inspection = designInspection;
+    const backendNodeId = (params as { backendNodeId?: unknown } | undefined)?.backendNodeId;
+    if (!inspection || inspection.tabId !== tab.id || inspection.navigationEpoch !== tab.navigationEpoch ||
+      typeof backendNodeId !== 'number' || !Number.isInteger(backendNodeId) || backendNodeId < 1) return;
+    void captureDesignSelection(tab, inspection, backendNodeId);
+  });
   contents.setWindowOpenHandler(({ url }) => {
     try { normalizeBrowserUseTarget(url); }
     catch { return { action: 'deny' }; }
@@ -453,6 +1225,7 @@ function wireTab(tab: BrowserUseTab): void {
   });
   contents.on('did-start-navigation', (_event, url, inPlace, mainFrame) => {
     if (tab.retired || !mainFrame || inPlace) return;
+    clearDesignInspection(tab.id, false);
     tab.documentLifetime.abort();
     tab.documentLifetime = new AbortController();
     agentCursorTabs.delete(tab.id);
@@ -473,6 +1246,7 @@ function wireTab(tab: BrowserUseTab): void {
   });
   contents.on('did-navigate-in-page', (_event, url, mainFrame) => {
     if (tab.retired || !mainFrame) return;
+    clearDesignInspection(tab.id, false);
     tab.documentLifetime.abort();
     tab.documentLifetime = new AbortController();
     tab.navigationEpoch += 1;
@@ -550,7 +1324,10 @@ function createBrowserUseTab(url = 'about:blank', active = true, navigate = true
     logWarn(`browser use tab ${tab.id} debugger: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   });
-  if (active || activeTabId === null) activeTabId = tab.id;
+  if (active || activeTabId === null) {
+    if (activeTabId !== tab.id) clearDesignInspection(undefined, false);
+    activeTabId = tab.id;
+  }
   applyPanel();
   publishState();
   if (navigate && url !== 'about:blank') void contents.loadURL(url).catch(error => {
@@ -660,6 +1437,7 @@ export function layoutBrowserUsePanel(bounds: BrowserUseBounds): BrowserUseState
 }
 
 export function hideBrowserUsePanel(): BrowserUseState {
+  clearDesignInspection(undefined, false);
   panelOpen = false;
   cancelBrowserUseMissionTimeout();
   agentMissionActive = false;
@@ -809,6 +1587,7 @@ export async function navigateBrowserUseTab(
 ): Promise<BrowserUseState> {
   await ensureBrowserUseReady();
   const tab = requireTab(tabId);
+  clearDesignInspection(tab.id, false);
   const url = normalizeBrowserUseTarget(value);
   const origin = permissionFor(url);
   if (source === 'agent') authorizeAgentNavigation(tab, url, options.provisionalTab === true);
@@ -872,6 +1651,7 @@ export async function browserUseHistory(
   source: 'user' | 'agent' = 'user'
 ): Promise<BrowserUseState> {
   const tab = requireTab(tabId);
+  clearDesignInspection(tab.id, false);
   const target = historyTarget(tab, action);
   if (source === 'agent') {
     if (action !== 'reload' && target === null) return browserUseState();
@@ -1698,6 +2478,7 @@ export async function scrollBrowserUseTab(tabId: number, snapshotId: number, del
 }
 
 export async function shutdownBrowserUse(): Promise<void> {
+  clearDesignInspection(undefined, false);
   for (const controller of activePointerGestures.values()) controller.abort();
   activePointerGestures.clear();
   if (pendingPermission) clearPendingPermission(pendingPermission.request.id);
@@ -1724,6 +2505,9 @@ export async function shutdownBrowserUse(): Promise<void> {
   agentCursorTabs.clear();
   agentCursorPositions.clear();
   agentCursorPendingCompletion.clear();
+  designInspection = null;
+  designInspectionGeneration = 0;
+  nextDesignSelectionId = 1;
   transientOrigins.clear();
   persistentOrigins.clear();
 }

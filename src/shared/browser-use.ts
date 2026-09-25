@@ -21,6 +21,56 @@ export interface BrowserUsePermission {
   url: string;
 }
 
+export interface BrowserUseDesignSourceCandidate {
+  kind: 'component' | 'style';
+  framework: 'React' | 'Vue' | 'CSS';
+  label: string;
+  url: string;
+  line: number | null;
+  column: number | null;
+}
+
+export interface BrowserUseDesignSelection {
+  id: number;
+  tag: string;
+  role: string;
+  name: string;
+  selector: string;
+  classes: string[];
+  width: number;
+  height: number;
+  boxModel: {
+    margin: [string, string, string, string];
+    border: [string, string, string, string];
+    padding: [string, string, string, string];
+    contentWidth: number;
+    contentHeight: number;
+  };
+  styles: Array<{ property: string; value: string }>;
+  sources: BrowserUseDesignSourceCandidate[];
+}
+
+export interface BrowserUseDesignContext {
+  tabId: number;
+  selectionId: number;
+  url: string;
+  title: string;
+  viewport: { width: number; height: number };
+  selection: BrowserUseDesignSelection;
+  screenshot: {
+    name: string;
+    dataUrl: string;
+    width: number;
+    height: number;
+  };
+}
+
+export interface BrowserUseDesignState {
+  active: boolean;
+  tabId: number | null;
+  selection: BrowserUseDesignSelection | null;
+}
+
 export interface BrowserUseState {
   open: boolean;
   ready: boolean;
@@ -28,6 +78,7 @@ export interface BrowserUseState {
   activeTabId: number | null;
   tabs: BrowserUseTabState[];
   permission: BrowserUsePermission | null;
+  design: BrowserUseDesignState;
 }
 
 export type BrowserUseRequest =
@@ -41,6 +92,7 @@ export type BrowserUseRequest =
   | { action: 'back'; tabId: number }
   | { action: 'forward'; tabId: number }
   | { action: 'reload'; tabId: number }
+  | { action: 'inspect'; tabId: number; enabled: boolean }
   | { action: 'approve'; id: string; decision: 'once' | 'always' | 'deny' };
 
 export interface BrowserUseElement {

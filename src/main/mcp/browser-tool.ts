@@ -21,6 +21,7 @@ import {
 } from '../browser-use.js';
 import { fail, type SurfaceRegistrar, type ToolContent, type ToolResult } from './kernel.js';
 import { toolDeclaration } from './tool-declarations.js';
+import { BROWSER_SURFACE_ROUTING, BROWSER_USE_SCOPE } from '../../shared/browser-routing.js';
 
 const tabId = z.number().int().positive();
 const snapshotId = z.number().int().positive();
@@ -134,7 +135,7 @@ export function registerBrowserTool(reg: SurfaceRegistrar): void {
     toolDeclaration('browser', () => ({
       title: 'Browser Use',
       description:
-        'Controls the isolated Browser Use workspace. Start with list. list and state are passive: they refresh an active mission but never restart one after done. Use select to choose a tab explicitly. state returns snapshot_id; every input action (click, double_click, hover, move, drag, swipe, long_press, type, key, scroll) requires that latest snapshot_id. Navigation, reload, resize, or one completed input invalidates it. Follow the returned next action: loading means wait, then state; wait defaults to 1000 ms when ms is omitted. New origins return approval_required immediately; after the user approves in the panel, retry the supplied navigation. state observes without selecting; prefer compact=true for target discovery and revalidation, and request full page text only when needed. Inside exec, emit result.structuredContent.value instead of the whole nested result to avoid duplicating the payload. done ends only the agent-driving mission; it does not close the panel or tabs.',
+        `${BROWSER_USE_SCOPE} ${BROWSER_SURFACE_ROUTING} Start with list; list/state stay passive after done. select changes tabs explicitly. state returns snapshot_id; every input action (click, double_click, hover, move, drag, swipe, long_press, type, key, scroll) requires that latest snapshot_id. Navigation, reload, resize, or one completed input invalidates it. Follow the returned next action: loading means wait, then state; wait defaults to 1000 ms when ms is omitted. New origins return approval_required immediately; after the user approves in the panel, retry the supplied navigation. state observes without selecting; prefer compact=true for target discovery and revalidation, and request full page text only when needed. Inside exec, emit result.structuredContent.value instead of the whole nested result to avoid duplicating the payload. done ends only the agent-driving mission; it does not close the panel or tabs.`,
       inputSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
     })),

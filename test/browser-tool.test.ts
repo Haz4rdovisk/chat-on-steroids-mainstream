@@ -172,6 +172,9 @@ describe('Browser Use MCP contract', () => {
       status: 'mission_finished', mission_active: false, tabs_preserved: true, panel_closed: false
     });
     expect(reg.tool.description).toContain('does not close the panel or tabs');
+    expect(reg.tool.description).toContain('BROWSER USE — isolated Browser panel');
+    expect(reg.tool.description).toContain('Route Browser Use/Browser panel to Core browser');
+    expect(reg.tool.description).toContain('no Desktop connector or companion extension');
     expect(reg.tool.description).toContain('every input action');
     expect(reg.tool.description).toContain('loading means wait, then state');
     expect(reg.tool.description).toContain('wait defaults to 1000 ms');

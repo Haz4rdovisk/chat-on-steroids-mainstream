@@ -3,7 +3,7 @@ import type { ChatModelCatalog } from '../shared/chat-models.js';
 import type { GoalModel } from '../shared/goal-reasoning.js';
 import type { TaskProgress } from '../shared/task-progress.js';
 import type { BrowserPreferences } from '../shared/browser-preferences.js';
-import type { BrowserUseBounds, BrowserUseRequest, BrowserUseState } from '../shared/browser-use.js';
+import type { BrowserUseBounds, BrowserUseDesignContext, BrowserUseRequest, BrowserUseState } from '../shared/browser-use.js';
 import type { SessionControlsView } from '../main/bridge.js';
 import type { InputAttachment } from '../shared/input.js';
 import type { UsageOverview } from '../shared/usage.js';
@@ -243,6 +243,8 @@ const api = {
   },
   getSessionControls: (id: string) => call<SessionControlsView>('sessions:controls', { id }),
   browserUse: (request: BrowserUseRequest) => call<BrowserUseState>('browserUse:panel', request),
+  browserUseDesignContext: (tabId: number, selectionId: number) =>
+    call<BrowserUseDesignContext>('browserUse:designContext', { tabId, selectionId }),
   browserUseLayout: (bounds: BrowserUseBounds): void => ipcRenderer.send('browserUse:layout', bounds),
   browserUseLayoutSync: (bounds: BrowserUseBounds): boolean => ipcRenderer.sendSync('browserUse:layoutSync', bounds) === true,
   onBrowserUseShowRequested: (listener: () => void): (() => void) => {

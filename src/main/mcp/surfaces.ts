@@ -25,6 +25,7 @@ import type { Capabilities } from '../../shared/types.js';
 import { desktopAutomationSupported } from '../platform.js';
 import { WINDOWS_COMPUTER_METHODS, WINDOWS_COMPUTER_READ_METHODS, WINDOWS_COMPUTER_INPUT_METHODS } from '../../shared/windows-computer.js';
 import { BROWSER_TOOLS, BROWSER_READ_TOOLS, BROWSER_WRITE_TOOLS } from '../../shared/browser-control.js';
+import { BROWSER_USE_SCOPE, COMPANION_BROWSER_SCOPE } from '../../shared/browser-routing.js';
 
 export const SURFACE_IDS = ['core', 'desktop', 'plugins'] as const;
 export type SurfaceId = (typeof SURFACE_IDS)[number];
@@ -101,7 +102,7 @@ const CORE: SurfaceDefinition = {
     'Read and edit code and text files on this computer, and run commands in a real terminal. ' +
     'Use for: opening and reading files, searching a repository, applying patches, creating, renaming and deleting files, ' +
     'running builds, tests, linters, git, npm and shell commands, continuing long-running or interactive terminal sessions, ' +
-    'saving images and files ChatGPT generates onto this computer, and browsing or interacting with websites in the separate in-app Browser Use workspace. ' +
+    `saving images and files ChatGPT generates onto this computer. ${BROWSER_USE_SCOPE} Use its browser tool for browsing or interacting with ordinary websites. ` +
     'Also displays task plans and — when the user has ' +
     'enabled it — spawns and coordinates worker agents, subagents or a parallel swarm across several ChatGPT conversations.',
   cardSummary: 'Files, patches, terminal and the isolated Browser Use workspace. Required — this is the coding connector.',
@@ -124,7 +125,7 @@ const DESKTOP: SurfaceDefinition = {
   serverName: 'chat-on-steroids-desktop',
   connectorName: `${CONNECTOR_BRAND} Desktop`,
   description:
-    'Control browser tabs in the background and this computer desktop, including its clipboard. ' +
+    `${COMPANION_BROWSER_SCOPE} Control those browser tabs in the background and this computer desktop, including its clipboard. ` +
     'Attach existing Chrome/Edge/Brave tabs or open new tabs; inspect DOM refs, page screenshots, JavaScript, console errors and network requests; click, fill forms and navigate without foreground activation. ' +
     'Use for: listing and launching apps, taking background window screenshots, reading what is on screen, listing and finding windows, inspecting buttons, fields and other UI controls, ' +
     'clicking, typing, pressing keys, scrolling and dragging in native applications, ' +

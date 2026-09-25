@@ -24,16 +24,89 @@ const fake = vi.hoisted(() => {
 
   class FakeDebugger {
     attached = false;
+    overlayEnabled = false;
+    inspecting = false;
+    failOverlayDisable = false;
     calls: Array<[string, any]> = [];
+    listeners = new Map<string, Set<Listener>>();
     constructor(private owner: { url: string; title: string }) {}
     isAttached(): boolean { return this.attached; }
     attach(): void { this.attached = true; }
+    on(name: string, listener: Listener): this {
+      const bucket = this.listeners.get(name) ?? new Set<Listener>();
+      bucket.add(listener); this.listeners.set(name, bucket); return this;
+    }
+    emit(name: string, ...args: any[]): void {
+      for (const listener of [...(this.listeners.get(name) ?? [])]) listener(...args);
+    }
     async sendCommand(method: string, params: any = {}): Promise<any> {
       this.calls.push([method, params]);
+      if (method === 'Overlay.enable') {
+        this.overlayEnabled = true;
+        return {};
+      }
+      if (method === 'CSS.enable') {
+        this.emit('message', {}, 'CSS.styleSheetAdded', { header: {
+          styleSheetId: 'sheet-1', sourceURL: 'https://example.com/src/button.css',
+          sourceMapURL: '', startLine: 0, startColumn: 0
+        } });
+        return {};
+      }
+      if (method === 'CSS.disable') return {};
+      if (method === 'Overlay.setInspectMode') {
+        if (!this.overlayEnabled) throw new Error('Overlay must be enabled');
+        this.inspecting = params.mode !== 'none';
+        return {};
+      }
+      if (method === 'Overlay.disable') {
+        if (this.failOverlayDisable) throw new Error('Overlay teardown failed');
+        this.overlayEnabled = false;
+        this.inspecting = false;
+        return {};
+      }
       if (method === 'Input.dispatchKeyEvent' && params.type === 'keyDown') onKeyDown?.();
       if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseMoved') onMouseMove?.(params);
       if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'root' } } };
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
+      if (method === 'Accessibility.getPartialAXTree') {
+        return { nodes: [{ role: { value: 'button' }, name: { value: 'Save changes' } }] };
+      }
+      if (method === 'DOM.resolveNode') return { object: { objectId: 'design-node-1' } };
+      if (method === 'DOM.requestNode') return { nodeId: 9 };
+      if (method === 'CSS.getMatchedStylesForNode') return { matchedCSSRules: [{ rule: {
+        origin: 'regular', styleSheetId: 'sheet-1', selectorList: { text: '.btn.primary' },
+        style: { styleSheetId: 'sheet-1', range: { startLine: 11, startColumn: 2 } }
+      } }] };
+      if (method === 'Runtime.callFunctionOn') {
+        const declaration = String(params.functionDeclaration ?? '');
+        if (declaration.includes("2px solid rgb(99, 157, 255)")) {
+          return { result: { value: {
+            outline: '1px dotted red', outlinePriority: '',
+            outlineOffset: '1px', outlineOffsetPriority: ''
+          } } };
+        }
+        if (declaration.includes("restore('outline'")) return { result: { value: true } };
+        return { result: { value: {
+          tag: 'button', explicitRole: '', selector: '#save-button', classes: ['btn', 'primary'],
+          x: 20, y: 30, width: 96, height: 32, viewportWidth: 800, viewportHeight: 600,
+          boxModel: {
+            margin: ['0px', '0px', '0px', '0px'],
+            border: ['1px', '1px', '1px', '1px'],
+            padding: ['8px', '12px', '8px', '12px'],
+            contentWidth: 70,
+            contentHeight: 14
+          },
+          styles: [
+            { property: 'display', value: 'flex' },
+            { property: 'color', value: 'rgb(255, 255, 255)' },
+            { property: 'made-up-property', value: 'must not escape the allowlist' }
+          ],
+          sources: [{
+            framework: 'React', label: 'SaveButton', fileName: 'webpack:///src/SaveButton.tsx',
+            lineNumber: 24, columnNumber: 7
+          }]
+        } } };
+      }
       if (method === 'Runtime.evaluate') {
         const expression = String(params.expression ?? '');
         if (expression.includes('const maxElements')) {
@@ -70,6 +143,7 @@ const fake = vi.hoisted(() => {
     userAgent = 'Fake Electron/44.3.0';
     history = ['about:blank'];
     historyIndex = 0;
+    captureRects: any[] = [];
     navigationHistory = {
       canGoBack: () => this.historyIndex > 0,
       canGoForward: () => this.historyIndex < this.history.length - 1,
@@ -117,9 +191,18 @@ const fake = vi.hoisted(() => {
       this.emit('did-start-loading'); this.emit('did-navigate', {}, this.url); this.emit('did-stop-loading');
     }
     reload(): void { this.emit('did-start-loading'); this.emit('did-stop-loading'); }
-    capturePage(): Promise<{ toPNG(): Buffer }> {
+    capturePage(rect?: any): Promise<any> {
       onCapturePage?.();
-      return Promise.resolve({ toPNG: () => Buffer.from('fake-png') });
+      this.captureRects.push(rect);
+      const image = (width: number, height: number): any => ({
+        getSize: () => ({ width, height }),
+        resize: (options: { width?: number; height?: number }) => image(
+          options.width ?? width,
+          options.height ?? height
+        ),
+        toPNG: () => Buffer.from('fake-png')
+      });
+      return Promise.resolve(image(rect?.width ?? 800, rect?.height ?? 600));
     }
     close(): void { if (!this.destroyed) { this.destroyed = true; this.emit('destroyed'); } }
   }
@@ -934,6 +1017,126 @@ it('can refresh refs without collecting full page text for fast composed mission
     .find((expression: string) => expression.includes('const maxElements'))!;
   expect(evaluation).toContain("text: '', elements");
   expect(evaluation).not.toContain("document.body?.innerText || '').replace");
+});
+
+it('owns Design inspection by active tab and document epoch and publishes only the clicked node summary', async () => {
+  await browser.ensureBrowserUseReady();
+  const owner = new fake.FakeBrowserWindow();
+  browser.attachBrowserUseWindow(owner as any);
+  await browser.openBrowserUseTab('https://example.com/', 'user');
+  const tabId = browser.browserUseState().activeTabId!;
+  const contents = fake.contents.get(tabId)!;
+
+  await browser.setBrowserUseDesignMode(tabId, true);
+  expect(browser.browserUseState().design).toEqual({ active: true, tabId, selection: null });
+  expect(contents.debugger.inspecting).toBe(true);
+  expect(contents.debugger.calls).toContainEqual(['Overlay.setInspectMode', expect.objectContaining({
+    mode: 'searchForNode', highlightConfig: expect.any(Object)
+  })]);
+
+  contents.debugger.emit('message', {}, 'Overlay.inspectNodeRequested', { backendNodeId: 41 });
+  await vi.waitFor(() => expect(browser.browserUseState().design.selection).toEqual({
+    id: 1, tag: 'button', role: 'button', name: 'Save changes', selector: '#save-button',
+    classes: ['btn', 'primary'], width: 96, height: 32,
+    boxModel: {
+      margin: ['0px', '0px', '0px', '0px'],
+      border: ['1px', '1px', '1px', '1px'],
+      padding: ['8px', '12px', '8px', '12px'],
+      contentWidth: 70,
+      contentHeight: 14
+    },
+    styles: [
+      { property: 'display', value: 'flex' },
+      { property: 'color', value: 'rgb(255, 255, 255)' }
+    ],
+    sources: [
+      { kind: 'component', framework: 'React', label: 'SaveButton', url: 'webpack:///src/SaveButton.tsx', line: 24, column: 7 },
+      { kind: 'style', framework: 'CSS', label: '.btn.primary', url: 'https://example.com/src/button.css', line: 12, column: 3 }
+    ]
+  }));
+  expect(contents.captureRects).toHaveLength(0);
+  const outlineCalls = (): Array<[string, any]> => contents.debugger.calls.filter(
+    ([method, params]: [string, any]) => method === 'Runtime.callFunctionOn' &&
+      String(params.functionDeclaration ?? '').includes("2px solid rgb(99, 157, 255)")
+  );
+  const restoreCalls = (): Array<[string, any]> => contents.debugger.calls.filter(
+    ([method, params]: [string, any]) => method === 'Runtime.callFunctionOn' &&
+      String(params.functionDeclaration ?? '').includes("restore('outline'")
+  );
+  expect(outlineCalls()).toHaveLength(1);
+  expect(contents.debugger.calls.some(([method]: [string]) => method === 'Overlay.highlightNode')).toBe(false);
+  await expect(browser.captureBrowserUseDesignContext(tabId, 2)).rejects.toThrow('selected element changed');
+  expect(contents.captureRects).toHaveLength(0);
+  const context = await browser.captureBrowserUseDesignContext(tabId, 1);
+  expect(contents.captureRects).toEqual([{ x: 8, y: 18, width: 120, height: 56 }]);
+  expect(context).toMatchObject({
+    tabId,
+    selectionId: 1,
+    url: 'https://example.com/',
+    title: 'Example',
+    viewport: { width: 800, height: 600 },
+    selection: { id: 1, selector: '#save-button' },
+    screenshot: {
+      name: 'browser-selection-button.png',
+      dataUrl: 'data:image/png;base64,ZmFrZS1wbmc=',
+      width: 120,
+      height: 56
+    }
+  });
+  const summaryCall = contents.debugger.calls.find(([method]: [string]) => method === 'Runtime.callFunctionOn');
+  expect(summaryCall?.[1].functionDeclaration).toContain('getComputedStyle(element)');
+  expect(summaryCall?.[1].functionDeclaration).toContain('"background-color"');
+  expect(outlineCalls()).toHaveLength(2);
+  expect(restoreCalls()).toHaveLength(1);
+  expect(restoreCalls()[0]?.[1].arguments).toEqual([
+    { value: '1px dotted red' }, { value: '' }, { value: '1px' }, { value: '' }
+  ]);
+  const hideIndex = contents.debugger.calls.findIndex(([method]: [string]) => method === 'Overlay.hideHighlight');
+  const restoredOutlineIndex = contents.debugger.calls.findLastIndex(
+    ([method, params]: [string, any]) => method === 'Runtime.callFunctionOn' &&
+      String(params.functionDeclaration ?? '').includes("2px solid rgb(99, 157, 255)")
+  );
+  expect(hideIndex).toBeLessThan(restoredOutlineIndex);
+
+  contents.debugger.failOverlayDisable = true;
+  await expect(browser.setBrowserUseDesignMode(tabId, false)).rejects.toThrow('Overlay teardown failed');
+  expect(browser.browserUseState().design.active).toBe(true);
+  expect(contents.debugger.inspecting).toBe(true);
+
+  contents.debugger.failOverlayDisable = false;
+  await browser.setBrowserUseDesignMode(tabId, false);
+  expect(browser.browserUseState().design).toEqual({ active: false, tabId: null, selection: null });
+  expect(contents.debugger.inspecting).toBe(false);
+  expect(contents.debugger.calls).toContainEqual(['CSS.disable', {}]);
+  const overlayDisable = contents.debugger.calls.findLastIndex(([method]: [string]) => method === 'Overlay.disable');
+  const cssDisable = contents.debugger.calls.findLastIndex(([method]: [string]) => method === 'CSS.disable');
+  expect(overlayDisable).toBeLessThan(cssDisable);
+
+  await browser.setBrowserUseDesignMode(tabId, true);
+
+  contents.debugger.emit('message', {}, 'Overlay.inspectModeCanceled', {});
+  expect(browser.browserUseState().design).toEqual({ active: false, tabId: null, selection: null });
+
+  await browser.setBrowserUseDesignMode(tabId, true);
+
+  contents.emit('did-start-navigation', {}, 'https://example.com/next', false, true);
+  expect(browser.browserUseState().design).toEqual({ active: false, tabId: null, selection: null });
+  await vi.waitFor(() => expect(contents.debugger.calls).toContainEqual([
+    'Overlay.disable', {}
+  ]));
+});
+
+it('cancels Design inspection when another Browser Use tab becomes active', async () => {
+  await browser.ensureBrowserUseReady();
+  const owner = new fake.FakeBrowserWindow();
+  browser.attachBrowserUseWindow(owner as any);
+  await browser.openBrowserUseTab('https://example.com/one', 'user');
+  const firstId = browser.browserUseState().activeTabId!;
+  await browser.setBrowserUseDesignMode(firstId, true);
+
+  await browser.openBrowserUseTab('https://example.com/two', 'user');
+  expect(browser.browserUseState().activeTabId).not.toBe(firstId);
+  expect(browser.browserUseState().design).toEqual({ active: false, tabId: null, selection: null });
 });
 
 it('is a vertical subsystem and has no dependency on Internal Chromium, bridge or recorder ownership', async () => {

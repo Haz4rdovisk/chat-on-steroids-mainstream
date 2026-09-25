@@ -30,6 +30,7 @@ const ICON_NAMES: Readonly<Record<string, string>> = {
   'i-globe': 'globe-hemisphere-west',
   'i-home': 'house',
   'i-image': 'image',
+  'i-inspect': 'corners-out',
   'i-key': 'key',
   'i-lock': 'lock-key',
   'i-loop': 'arrows-clockwise',

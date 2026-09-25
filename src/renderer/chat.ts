@@ -30,6 +30,7 @@ import { injectableAttachments, queuedFollowup, MAX_INPUT_IMAGES } from '../shar
 import type { InputArgs, InputEntry } from '../main/session/input.js';
 import type { LocalProject } from '../shared/projects.js';
 import type { TaskProgress } from '../shared/task-progress.js';
+import type { BrowserUseDesignContext } from '../shared/browser-use.js';
 /**
  * Desktop chat workspace: recorded prose/tool truth, exact-session controls and a composer.
  * The extension remains the ChatGPT transport; main owns permissions, delivery, Goal and
@@ -4768,7 +4769,7 @@ export function initChat(next: Deps): void {
       await changeSessionCompaction(cancel);
     });
   }
-  const appendImages = (owner: ComposerDraftOwner, chosen: InputAttachment[] | null | undefined): boolean => {
+  const appendImages = (owner: ComposerDraftOwner, chosen: Array<InputImage | InputAttachment> | null | undefined): boolean => {
     if (!chosen?.length) return false;
     if (!ownsComposerDraft(owner)) { toast(t("Files were not added because the draft changed.")); return false; }
     const combined = [...(imageDrafts.get(owner.key) ?? []), ...chosen];
@@ -4776,24 +4777,53 @@ export function initChat(next: Deps): void {
     imageDrafts.set(owner.key, combined); paintComposerImages();
     return true;
   };
+  const appendComposerRequest = (owner: ComposerDraftOwner, request: string): boolean => {
+    if (!ownsComposerDraft(owner)) return false;
+    const input = $<HTMLTextAreaElement>('chatInput');
+    const authored = authoredComposerText();
+    if (!authored.endsWith(request)) {
+      const separator = !authored || authored.endsWith('\n\n') ? '' : authored.endsWith('\n') ? '\n' : '\n\n';
+      const draft = `${authored}${separator}${request}`;
+      inputDrafts.set(owner.key, draft);
+      if (skillPicker) skillPicker.restore();
+      else input.value = draft;
+      input.dispatchEvent(new input.ownerDocument.defaultView!.Event('input', { bubbles: true }));
+    }
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    return true;
+  };
+  const browserDesignRequest = (context: BrowserUseDesignContext): string => {
+    const selection = context.selection;
+    const classes = selection.classes.length ? selection.classes.map(name => `.${name}`).join(' ') : 'none';
+    const styles = selection.styles.map(style => `${style.property}: ${style.value || '—'}`).join('; ');
+    const identity = [selection.role, selection.name].filter(Boolean).join(' · ') || 'unnamed element';
+    const sources = selection.sources.map(source => {
+      const position = source.line === null ? '' : `:${source.line}${source.column === null ? '' : `:${source.column}`}`;
+      return `${source.framework}${source.label ? ` ${source.label}` : ''}: ${source.url}${position}`;
+    }).join('; ');
+    return [
+      t('I selected this interface element in Browser Use. Use the attached screenshot and runtime details to locate the corresponding source before changing it.'),
+      '',
+      `Page: ${context.title.slice(0, 200) || 'Untitled'} — ${context.url.slice(0, 2048)}`,
+      `Element: <${selection.tag || 'element'}> · ${identity}`,
+      `Selector: ${selection.selector || 'unavailable'}`,
+      `Classes: ${classes}`,
+      `Element size: ${selection.width} × ${selection.height} · viewport ${context.viewport.width} × ${context.viewport.height}`,
+      `Box model: margin ${selection.boxModel.margin.join(' ')} · border ${selection.boxModel.border.join(' ')} · padding ${selection.boxModel.padding.join(' ')} · content ${selection.boxModel.contentWidth} × ${selection.boxModel.contentHeight}`,
+      `Relevant computed styles: ${styles || 'none'}`,
+      `Probabilistic source candidates (verify before editing): ${sources || 'none'}`,
+      '',
+      t('Requested change: ')
+    ].join('\n');
+  };
   filePanel = createFilePanel({
     host: document.querySelector<HTMLElement>('[data-panel="chat"]')!, toggle: fileToggle,
     onShow: () => { agentPanel?.hide(true); void browserPanel?.hide(); },
     onRequestGitReview: projectId => {
       if (selectedLocalProject()?.id !== projectId) return;
-      const input = $<HTMLTextAreaElement>('chatInput');
       const request = t('Review the Git changes in this project, including untracked files. Stage only related changes and leave unrelated work untouched. Run relevant checks, commit with a clear message, then push the current branch to its configured remote without force. If scope, checks, or remote are uncertain, stop and ask me.');
-      const authored = authoredComposerText();
-      if (!authored.endsWith(request)) {
-        const separator = !authored || authored.endsWith('\n\n') ? '' : authored.endsWith('\n') ? '\n' : '\n\n';
-        const draft = `${authored}${separator}${request}`;
-        inputDrafts.set(draftKey(), draft);
-        if (skillPicker) skillPicker.restore();
-        else input.value = draft;
-        input.dispatchEvent(new input.ownerDocument.defaultView!.Event('input', { bubbles: true }));
-      }
-      input.focus();
-      input.setSelectionRange(input.value.length, input.value.length);
+      appendComposerRequest(composerDraftOwner(), request);
     },
     captureAttachment: () => {
       const owner = composerDraftOwner();
@@ -4803,7 +4833,17 @@ export function initChat(next: Deps): void {
   browserPanel = createBrowserPanel({
     host: document.querySelector<HTMLElement>('[data-panel="chat"]')!,
     toggle: browserToggle,
-    onShow: () => { agentPanel?.hide(true); filePanel?.hide(true); }
+    onShow: () => { agentPanel?.hide(true); filePanel?.hide(true); },
+    captureAskAgent: () => {
+      const owner = composerDraftOwner();
+      return context => {
+        if (!ownsComposerDraft(owner)) return false;
+        if (!appendImages(owner, [{ name: context.screenshot.name, dataUrl: context.screenshot.dataUrl }])) return false;
+        if (!appendComposerRequest(owner, browserDesignRequest(context))) return false;
+        toast(t('Selection added to the composer.'));
+        return true;
+      };
+    }
   });
   filePanel.update(selectedLocalProject());
   workspaceTerminal = createWorkspaceTerminal();
