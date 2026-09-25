@@ -602,6 +602,52 @@ it('routes an unconfigured Connect action to Setup without attempting a connecti
   expect(doc.querySelector('.app')?.getAttribute('data-screen')).toBe('settings');
 });
 
+it.each(['wizConnect', 'sidebarConnect'])(
+  'persists valid Setup drafts before %s starts the tunnel',
+  async (buttonId) => {
+    let live: any;
+    const order: string[] = [];
+    const connect = vi.fn(() => {
+      order.push('connect');
+      expect(live.config.tunnel.tunnelId).toBe(`tunnel_${'b'.repeat(32)}`);
+      expect(live.hasApiKey).toBe(true);
+      live.status.state = 'connected';
+      return Promise.resolve({ ok: true as const, data: structuredClone(live) });
+    });
+    const mounted = await mountChat({}, [], {
+      saveSettings: (patch: any) => {
+        order.push('settings');
+        live.config = { ...live.config, ...structuredClone(patch) };
+        return Promise.resolve({ ok: true as const, data: structuredClone(live) });
+      },
+      setApiKey: () => {
+        order.push('key');
+        live.hasApiKey = true;
+        return Promise.resolve({ ok: true as const, data: structuredClone(live) });
+      },
+      connect
+    });
+    live = mounted.state;
+    live.config.tunnel.tunnelId = '';
+    live.hasApiKey = false;
+    mounted.push(structuredClone(live));
+
+    const doc = mounted.window.document;
+    const tunnel = doc.getElementById('tunnelId') as HTMLInputElement;
+    const key = doc.getElementById('apiKey') as HTMLInputElement;
+    tunnel.value = `tunnel_${'b'.repeat(32)}`;
+    tunnel.dispatchEvent(new mounted.window.Event('input'));
+    key.value = 'sk-valid-setup-draft';
+    key.dispatchEvent(new mounted.window.Event('input'));
+
+    expect((doc.getElementById('wizConnect') as HTMLButtonElement).disabled).toBe(false);
+    (doc.getElementById(buttonId) as HTMLButtonElement).click();
+    expect((doc.getElementById('wizConnect') as HTMLButtonElement).textContent).toBe('Connecting…');
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
+    expect(order).toEqual(['settings', 'key', 'connect']);
+  }
+);
+
 it('keeps global connection controls in a compact sidebar popover', async () => {
   const mounted = await mountChat({ hasApiKey: true });
   const doc = mounted.window.document;

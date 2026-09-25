@@ -666,8 +666,19 @@ function isRunning(value: AppState['status']['state']): boolean {
   );
 }
 
+interface SetupConnectionValues {
+  tunnelId: string;
+  hasApiKey: boolean;
+}
+
 /** What still has to happen before connecting can work, in the order of the wizard. */
-function missingStep(next: AppState): { step: string; text: string } | null {
+function missingStep(
+  next: AppState,
+  values: SetupConnectionValues = {
+    tunnelId: next.config.tunnel.tunnelId,
+    hasApiKey: next.hasApiKey
+  }
+): { step: string; text: string } | null {
   const { config } = next;
   // This is the same capability rule as the main-process admission gate. Desktop and
   // clipboard may legitimately be rootless; enabling one must not hide a root still needed
@@ -676,19 +687,32 @@ function missingStep(next: AppState): { step: string; text: string } | null {
     return { step: 'folder', text: t("Choose a folder to share — step 1.") };
   }
   if (config.tunnel.kind === 'openai') {
-    if (!TUNNEL_ID_PATTERN.test(config.tunnel.tunnelId)) {
+    if (!TUNNEL_ID_PATTERN.test(values.tunnelId)) {
       return { step: 'tunnel', text: t("Create a tunnel and paste its ID — step 2.") };
     }
-    if (!(next.secureStorage?.available ?? true) && !next.hasApiKey) {
+    if (!(next.secureStorage?.available ?? true) && !values.hasApiKey) {
       return { step: 'key', text: next.secureStorage?.detail ?? t("Secure credential storage is unavailable.") };
     }
-    if (!next.hasApiKey) {
+    if (!values.hasApiKey) {
       return { step: 'key', text: t("Add a restricted API key — step 3.") };
     }
   } else if (!next.resolvedBinary && config.tunnel.kind === 'cloudflared') {
     return { step: 'connect', text: t("cloudflared was not found on this computer.") };
   }
   return null;
+}
+
+/**
+ * Readiness for a click the user can make now, including credentials still visible in Setup.
+ * Persisted state remains authoritative everywhere else; this projection exists only so a
+ * disabled button cannot prevent the blur/change events that would make valid drafts durable.
+ */
+function currentSetupMissingStep(next: AppState): { step: string; text: string } | null {
+  const key = $<HTMLInputElement>('apiKey');
+  return missingStep(next, {
+    tunnelId: $<HTMLInputElement>('tunnelId').value.trim(),
+    hasApiKey: next.hasApiKey || (next.secureStorage?.available !== false && key.value !== '')
+  });
 }
 
 interface RootRenameState {
@@ -1042,6 +1066,10 @@ function paintSetupFields(): void {
     input.classList.toggle('is-empty', !stored && input.value.trim() === '');
     input.setAttribute('aria-required', String(!stored));
   }
+  if (state) {
+    paintConnectionAction(state);
+    paintWizardConnectionAction(state);
+  }
 }
 
 /**
@@ -1056,7 +1084,7 @@ function paintConnectionAction(next: AppState): void {
   const statusBusy = disconnecting || status.state === 'starting-server' || status.state === 'connecting-tunnel';
   const connecting = connectionActionPhase === 'connecting' || statusBusy;
   const attention = connectionActionPhase === 'attention' && !connected;
-  const missing = missingStep(next);
+  const missing = currentSetupMissingStep(next);
   const button = $<HTMLButtonElement>('sidebarConnect');
   const connectHadFocus = document.activeElement === button;
 
@@ -1086,11 +1114,31 @@ function showConnectionAttention(attempt: number, message: string): void {
   if (!state || attempt !== connectionActionAttempt) return;
   connectionActionPhase = 'attention';
   paintConnectionAction(state);
+  paintWizardConnectionAction(state);
   toast(message, () => {
     if (!state || attempt !== connectionActionAttempt || connectionActionPhase !== 'attention') return;
     connectionActionPhase = 'idle';
     paintConnectionAction(state);
+    paintWizardConnectionAction(state);
   });
+}
+
+function paintWizardConnectionAction(next: AppState): void {
+  const { status } = next;
+  const disconnecting = status.state === 'disconnecting';
+  const connecting = connectionActionPhase === 'connecting' || status.state === 'starting-server' || status.state === 'connecting-tunnel';
+  const running = isRunning(status.state);
+  const missing = currentSetupMissingStep(next);
+  const button = $<HTMLButtonElement>('wizConnect');
+  ui(button, 'textContent', () => disconnecting
+    ? t('Disconnecting…')
+    : connecting
+      ? t('Connecting…')
+      : running
+        ? t('Disconnect')
+        : t('Connect'));
+  button.disabled = setupProfileBusy || disconnecting || connecting || (!running && missing !== null);
+  button.title = !running && missing ? missing.text : '';
 }
 
 function apply(next: AppState): void {
@@ -1246,9 +1294,7 @@ function apply(next: AppState): void {
   $('apiKeyState').classList.toggle('is-warn', !secureStorageAvailable);
   $<HTMLButtonElement>('removeApiKey').disabled = !next.hasApiKey || !secureStorageAvailable;
 
-  const wizConnect = $<HTMLButtonElement>('wizConnect');
-  ui(wizConnect, 'textContent', () => disconnecting ? t('Disconnecting…') : running ? t("Disconnect") : t("Connect"));
-  wizConnect.disabled = disconnecting || (!running && missing !== null);
+  paintWizardConnectionAction(next);
   ui($('wizStatus'), 'textContent', () => running || failed || disconnecting ? status.detail || t(STATUS_TEXT[status.state]) : '');
 
   $('chatgptConn').replaceChildren(
@@ -1756,11 +1802,108 @@ async function dropFolders(event: DragEvent): Promise<void> {
   }
 }
 
+function revealMissingSetup(missing: { step: string; text: string }): void {
+  showTab('setup');
+  const target = step(missing.step);
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  const focus = missing.step === 'folder'
+    ? $<HTMLButtonElement>('wizAddFolder')
+    : missing.step === 'tunnel'
+      ? $<HTMLInputElement>('tunnelId')
+      : missing.step === 'key'
+        ? $<HTMLInputElement>('apiKey')
+        : $<HTMLButtonElement>('wizConnect');
+  focus.focus({ preventScroll: true });
+}
+
+async function storeSetupApiKeyDraft(): Promise<boolean> {
+  const input = $<HTMLInputElement>('apiKey');
+  const submitted = input.value;
+  if (submitted === '') return true;
+  const owner = state?.config.tunnel.profileId;
+  const request = (async () => {
+    const next = await run(api.setApiKey(submitted, owner));
+    if (!next) return false;
+    // Do not erase a newer value typed while safeStorage/IPC was resolving this one.
+    if (state?.config.tunnel.profileId === owner) {
+      if (input.value === submitted) input.value = '';
+      apply(next);
+    }
+    toast('API key stored');
+    return true;
+  })();
+  setupKeySave = request;
+  return request;
+}
+
+/**
+ * Make the exact Setup values visible to the connection owner before it starts. This is the
+ * transaction boundary the old UI lacked: blur/change are conveniences, not prerequisites for
+ * a Connect click to work.
+ */
+async function persistSetupDraftsForConnection(): Promise<boolean> {
+  if (!state) return false;
+  const initialTunnelId = $<HTMLInputElement>('tunnelId').value.trim();
+  const initialKey = $<HTMLInputElement>('apiKey').value;
+  if (initialTunnelId === state.config.tunnel.tunnelId && initialKey === '' && missingStep(state) === null) {
+    return true;
+  }
+
+  await settingsSaveQueue;
+  if (!state) return false;
+
+  const tunnelId = $<HTMLInputElement>('tunnelId').value.trim();
+  if (tunnelId !== state.config.tunnel.tunnelId) await save();
+  await settingsSaveQueue;
+  if (!state || $<HTMLInputElement>('tunnelId').value.trim() !== state.config.tunnel.tunnelId) return false;
+
+  // A blur immediately before the click may already own this write. Drain it first, then store
+  // any newer draft that deliberately remained in the field.
+  await setupKeySave;
+  if ($<HTMLInputElement>('apiKey').value !== '' && !(await storeSetupApiKeyDraft())) return false;
+  await setupKeySave;
+  return state !== null && missingStep(state) === null;
+}
+
 async function toggleConnection(): Promise<void> {
-  if (!state || state.status.state === 'disconnecting') return;
-  // Mirrors the button label exactly, so a click always does what it says.
-  const next = await run(isRunning(state.status.state) ? api.disconnect() : api.connect());
-  if (next) apply(next);
+  if (!state || state.status.state === 'disconnecting' || setupProfileBusy) return;
+  if (isRunning(state.status.state)) {
+    const next = await run(api.disconnect());
+    if (next) apply(next);
+    return;
+  }
+
+  const missing = currentSetupMissingStep(state);
+  if (missing) {
+    revealMissingSetup(missing);
+    return;
+  }
+
+  const attempt = ++connectionActionAttempt;
+  connectionActionPhase = 'connecting';
+  paintConnectionAction(state);
+  paintWizardConnectionAction(state);
+  if (!(await persistSetupDraftsForConnection())) {
+    if (!state || attempt !== connectionActionAttempt) return;
+    connectionActionPhase = 'idle';
+    paintConnectionAction(state);
+    paintWizardConnectionAction(state);
+    const persistedMissing = missingStep(state);
+    if (persistedMissing) revealMissingSetup(persistedMissing);
+    return;
+  }
+
+  const reply = await api.connect();
+  if (attempt !== connectionActionAttempt) return;
+  if (!reply.ok) {
+    showConnectionAttention(attempt, reply.error);
+    return;
+  }
+  connectionActionPhase = connectionAttemptFailed(reply.data) ? 'attention' : 'idle';
+  apply(reply.data);
+  if (connectionActionPhase === 'attention') {
+    showConnectionAttention(attempt, reply.data.status.detail || t(STATUS_TEXT[reply.data.status.state]));
+  }
 }
 
 /** Runs the main-process self-test and lists a line per link in the chain. */
@@ -1870,27 +2013,7 @@ function installUpdate(): void {
 
 $('updateInstall').addEventListener('click', installUpdate);
 $('installUpdate').addEventListener('click', installUpdate);
-$('sidebarConnect').addEventListener('click', async () => {
-  if (!state) return;
-  if (missingStep(state)) { showTab('setup'); return; }
-  if (isRunning(state.status.state)) {
-    const disconnected = await run(api.disconnect()); if (!disconnected) return; apply(disconnected);
-  }
-  const attempt = ++connectionActionAttempt;
-  connectionActionPhase = 'connecting';
-  paintConnectionAction(state);
-  const reply = await api.connect();
-  if (attempt !== connectionActionAttempt) return;
-  if (!reply.ok) {
-    showConnectionAttention(attempt, reply.error);
-    return;
-  }
-  connectionActionPhase = connectionAttemptFailed(reply.data) ? 'attention' : 'idle';
-  apply(reply.data);
-  if (connectionActionPhase === 'attention') {
-    showConnectionAttention(attempt, reply.data.status.detail || t(STATUS_TEXT[reply.data.status.state]));
-  }
-});
+$('sidebarConnect').addEventListener('click', () => void toggleConnection());
 $('connectionPopoverDisconnect').addEventListener('click', async () => {
   if (!state || state.status.state !== 'connected') return;
   setConnectionPopover(false);
@@ -1923,25 +2046,7 @@ $('copyLogJson').addEventListener('click', async () => {
 
 // The API key is written on blur so it is not saved keystroke by keystroke.
 for (const id of ['tunnelId', 'apiKey']) $(id).addEventListener('input', paintSetupFields);
-$('apiKey').addEventListener('blur', () => {
-  const input = $<HTMLInputElement>('apiKey');
-  const submitted = input.value;
-  if (submitted === '') return;
-  const owner = state?.config.tunnel.profileId;
-  setupKeySave = (async () => {
-    const next = await run(api.setApiKey(submitted, owner));
-    if (next) {
-    // Do not erase a newer value typed while safeStorage/IPC was still resolving the previous
-    // blur. On failure keep the submitted value too, so the user can retry instead of losing it.
-      if (state?.config.tunnel.profileId === owner) {
-        if (input.value === submitted) input.value = '';
-        apply(next);
-      }
-      toast('API key stored');
-    }
-    return next !== null;
-  })();
-});
+$('apiKey').addEventListener('blur', () => { void storeSetupApiKeyDraft(); });
 
 $('removeApiKey').addEventListener('click', async () => {
   const next = await run(api.setApiKey('', state?.config.tunnel.profileId));
