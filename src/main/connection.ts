@@ -377,6 +377,17 @@ async function startOptionalTunnel(
   }
 
   updateSurface(id, { state: 'starting', detail: 'Connecting…' });
+  // Diagnose only an admitted OpenAI connector against transports we actually own,
+  // including Settings-only restarts. Saved but disabled IDs are not participants.
+  const peers: Array<[SurfaceId, string]> = [
+    ['core', activeCoreTransport?.tunnelId ?? ''],
+    ...[...optionalTunnels].map(([surfaceId, active]): [SurfaceId, string] => [surfaceId, active.tunnelId])
+  ];
+  const shared = peers.filter(([, value]) => value.trim() && value.trim() === tunnelId.trim()).map(([surfaceId]) => surfaceId);
+  if (shared.length) logWarn(
+    `connection: ${[...shared, id].join(' and ')} are configured on the same Secure Tunnel ID. ` +
+    'Requests may reach the wrong connector and fail with UNKNOWN_TOOL. Give each connector its own tunnel ID.'
+  );
   const lifetime = { handle: null as TunnelHandle | null, tunnelId };
   optionalTunnels.set(id, lifetime);
   try {

@@ -2605,6 +2605,48 @@ describe.each(['off', 'goal', 'loop'] as const)('shared automatic Continue (%s)'
     } finally { clock.mockRestore(); }
   });
 
+  it('persists recovery release reasons without repeating logs or changing delivery custody', async () => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const { getLog } = await import('../src/main/logger.js');
+    try {
+      const { row, conversationId } = await silent('gpt-5.6-sol', ms => { now += ms; });
+      const warnings = () => getLog().filter(entry => entry.message.includes(`input ${row.id}: the browser could not send`));
+      const reason = 'The composer refused the prepared text.';
+      expect(await input.claimBrowserInput(row.id, 'release-doc', conversationId, true)).not.toBeNull();
+      const durable = await import('../src/main/durable.js');
+      const write = vi.spyOn(durable, 'writeDurableNow').mockRejectedValueOnce(new Error('test disk failure'));
+      try { await expect(input.failBrowserInput(row.id, 'release-doc', reason)).rejects.toThrow('test disk failure'); }
+      finally { write.mockRestore(); }
+      expect(warnings()).toHaveLength(0);
+      expect((await input.listInputs()).find(entry => entry.id === row.id)).toMatchObject({ state: 'browser', owner: 'release-doc' });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        expect(await input.claimBrowserInput(row.id, 'release-doc', conversationId, true)).not.toBeNull();
+        expect(await input.failBrowserInput(row.id, 'foreign-doc', reason)).toBe(false);
+        expect(await input.failBrowserInput(row.id, 'release-doc', reason)).toBe(true);
+        input.resetInputForTests();
+        expect((await input.listInputs()).find(entry => entry.id === row.id)).toMatchObject({
+          state: 'queued', owner: null, error: reason, text: row.text, dueAt: row.dueAt,
+          silenceBoundary: row.silenceBoundary, recovery: row.recovery
+        });
+        expect(warnings()).toHaveLength(1);
+      }
+      const changed = 'Another preparation failure: ' + 'x'.repeat(240);
+      expect(await input.claimBrowserInput(row.id, 'release-doc', conversationId, true)).not.toBeNull();
+      expect(await input.failBrowserInput(row.id, 'release-doc', changed)).toBe(true);
+      expect((await input.listInputs()).find(entry => entry.id === row.id)?.error).toBe(changed.slice(0, 200));
+      expect(warnings()).toHaveLength(2);
+      expect(await input.claimBrowserInput(row.id, 'release-doc', conversationId, true)).not.toBeNull();
+      expect(await input.authorizeBrowserInput(row.id, 'release-doc', conversationId)).toBe(true);
+      expect(await input.failBrowserInput(row.id, 'release-doc', reason)).toBe(false);
+      expect((await input.listInputs()).find(entry => entry.id === row.id)).toMatchObject({ state: 'browser', owner: 'release-doc', sendAuthorizedAt: expect.any(Number) });
+      expect(warnings()).toHaveLength(2);
+      expect(await input.acknowledgeBrowserInput(row.id, 'release-doc', conversationId, 'confirmed-recovery-question')).toBe(true);
+      const confirmed = (await input.listInputs()).find(entry => entry.id === row.id)!;
+      expect(confirmed.state).toBe('sent');
+      expect(confirmed.error).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  });
+
   it.each(['timeout', 'failure'])('releases a pre-send browser %s to the same ticket without replaying Stop', async failure => {
     let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
     try {

@@ -14,7 +14,7 @@ import { getSession, findSessionByConversation, createSession, deleteSession, re
 import { assignSessionProject, projectWorkspace, getSessionProject } from '../projects.js';
 import { isChatBlocked } from './blocked-chats.js';
 import { wakeBrowserWork } from '../browser-wake.js';
-import { logInfo } from '../logger.js';
+import { logInfo, logWarn } from '../logger.js';
 import { noteChatOrigin } from './recorder.js';
 import { isAstraModel, isProModel } from '../../shared/chat-models.js';
 import { inFlightToolCalls } from '../mcp/call-context.js';
@@ -1018,8 +1018,9 @@ export function finishNeedsBrowserInput(sessionId: string): Promise<boolean> {
 // Control-only turn_end observations (including our own Stop) are not renewed work.
 const RECOVERY_WORK_KINDS: import('../../shared/session.js').SessionEvent['kind'][] =
   ['user_message', 'assistant_message', 'tool_call', 'page_tool', 'turn_start'];
-function releaseRecoveryClaim(row: InputEntry): InputEntry {
+function releaseRecoveryClaim(row: InputEntry, error?: string): InputEntry {
   return { ...row, state: 'queued', owner: null, offeredAt: undefined, completedTurnId: undefined,
+    ...(error ? { error: error.slice(0, 200) } : {}),
     recovery: { ...row.recovery!, phase: row.recovery!.phase === 'ready' ? 'ready' : 'resumed' } };
 }
 async function recoveryCurrent(row: InputEntry): Promise<boolean> {
@@ -1378,6 +1379,8 @@ export function acknowledgeBrowserInput(id: string, owner: string, conversationI
     if (entry.purpose === 'decision' && entry.lifetime !== 'temporary-planner' && deliveredConversation) await deliveryHooks?.bindHelper?.(deliveredConversation, entry.decisionSourceSessionId ?? null);
     const acknowledged: InputEntry = { ...entry, conversationId: deliveredConversation,
       deliveredSessionId: delivered?.id ?? null, state: entry.state === 'cancelled' ? 'cancelled' : entry.purpose === 'decision' ? 'decision' : 'sent',
+      // A confirmed recovery receipt supersedes its previous preparation failure.
+      ...(entry.recovery ? { error: undefined } : {}),
       ...(entry.state === 'cancelled' ? { error: 'Cancelled locally; delivery was later confirmed in ChatGPT.' } : {}),
       ...(messageId ? { messageId } : {}), deliveredAt: Date.now() };
     await transition(current, current.map((row) => row === entry ? acknowledged : row.id === entry.companionInputId ? { ...row,
@@ -1511,7 +1514,12 @@ export function failBrowserInput(id: string, owner: string, error: string): Prom
     const entry = current.find((row) => row.id === id && row.owner === owner && row.state === 'browser');
     if (!entry || companionOf(current, entry)) return false;
     if (entry.recovery && entry.requiresAuthorization === true && entry.sendAuthorizedAt === undefined) {
-      await commit(current.map(row => row === entry ? releaseRecoveryClaim(row) : row));
+      const released = releaseRecoveryClaim(entry, error);
+      await commit(current.map(row => row === entry ? released : row));
+      // The durable row retains the last reason across claims and restart; no second
+      // diagnostic ledger or new retry authority. Only report a committed change.
+      if (released.error && released.error !== entry.error)
+        logWarn(`input ${entry.id}: the browser could not send this recovery message — ${released.error}`);
       return true;
     }
     // The document reports this only while its native Send has never been attempted.

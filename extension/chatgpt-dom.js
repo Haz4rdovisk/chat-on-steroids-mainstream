@@ -322,7 +322,7 @@ var CLF_DOM = (() => {
 
   function transportFailure(value) {
     const line = String(value || '').replace(/\s+/g, ' ').trim();
-    return /^(?:message delivery timed out(?:\. please try again\.?)?|connection interrupted\.? waiting for the complete answer\.?|unknown error occurred\.?|there was an error generating (?:a|the) response\.?|error in message stream\.?|network error\.?|something went wrong\.?|something went wrong while generating the response(?:\. if this issue persists please contact us through our help center at help\.openai\.com\.?)?\.?)(?: retry)?$/i.test(line);
+    return /^(?:message delivery timed out(?:\. please try again\.?)?|connection interrupted\.? waiting for the complete answer\.?|chatgpt stream recovery polling timed out\.?|unknown error occurred\.?|there was an error generating (?:a|the) response\.?|error in message stream\.?|network error\.?|something went wrong\.?|something went wrong while generating the response(?:\. if this issue persists please contact us through our help center at help\.openai\.com\.?)?\.?)(?: retry)?$/i.test(line);
   }
 
   /**
@@ -512,8 +512,12 @@ var CLF_DOM = (() => {
 
   const shellRole = node => /:(user|assistant)$/.exec(node?.getAttribute?.('data-content-search-unit-key') || '')?.[1] || '';
   function turnIdOf(section) {
-    return section?.matches?.(SHELL_TURN) ? section.querySelector('[data-content-search-turn-key]')?.getAttribute('data-content-search-turn-key') || null
-      : section?.getAttribute?.('data-turn-id') || null;
+    if (!section?.matches?.(SHELL_TURN)) return section?.getAttribute?.('data-turn-id') || null;
+    // Search keys can be positional (fallback-turn-N) and change on remount.
+    // Keep this selection aligned with MAIN; slot addressing still uses entry.id.
+    const key = section.getAttribute('data-turn-key');
+    const search = section.querySelector('[data-content-search-turn-key]')?.getAttribute('data-content-search-turn-key');
+    return [key, search].find(value => value && !/^fallback-turn-\d+$/.test(value)) || null;
   }
   function messageIdOf(node) {
     const explicit = node?.getAttribute?.('data-message-id');
@@ -747,6 +751,11 @@ var CLF_DOM = (() => {
   function generating() {
     return safe(() => {
       if (stopControls().length > 0) return true;
+      // A retained in_progress model is only a hint. An exact, enabled native
+      // idle control supersedes it; missing/unknown controls prove nothing.
+      const primary = primaryComposerControls();
+      if (primary.length === 1 && sendButtonEnabled(primary[0]) &&
+          (isSendArrow(primary[0]) || isVoiceControl(primary[0]))) return false;
       // Historical interrupted exchanges can retain in_progress forever. Only the
       // latest native response can describe this composer's current generation.
       const latest = [...document.querySelectorAll(SHELL_TURN)].filter(node =>
@@ -760,16 +769,36 @@ var CLF_DOM = (() => {
   // Observed live 2026-09-25; adapted from #405. Keep explicit selectors first
   // and fail closed if the unlabelled structure changes, rather than guess.
   const STOP_SQUARE_PATH = 'M4.5 5.75C4.5 5.05964 5.05964 4.5 5.75 4.5H14.25C14.9404 4.5 15.5 5.05964 15.5 5.75V14.25C15.5 14.9404 14.9404 15.5 14.25 15.5H5.75C5.05964 15.5 4.5 14.9404 4.5 14.25V5.75Z';
+  // Exact native paths observed on Rebecca 2026-09-26. Do not identify Send by
+  // exclusion (not Stop/Voice), path prefixes or English-only labels.
+  const SEND_ARROW_PATH = 'M9.33467 16.6663V4.93978L4.6374 9.63704L4.1667 9.16634L3.69599 8.69661L9.52998 2.86263L9.63447 2.77767C9.8925 2.60753 10.2433 2.63564 10.4704 2.86263L16.3034 8.69661L16.3884 8.80111C16.5588 9.05922 16.5306 9.40982 16.3034 9.63704C16.0762 9.86414 15.7255 9.89242 15.4675 9.722L15.363 9.63704L10.6647 4.9388V16.6663C10.6647 17.0336 10.367 17.3314 9.99971 17.3314C9.63259 17.3312 9.33467 17.0335 9.33467 16.6663ZM4.6374 9.63704C4.3777 9.89674 3.95569 9.89674 3.69599 9.63704C3.43657 9.37744 3.43668 8.95628 3.69599 8.69661L4.6374 9.63704Z';
+  const VOICE_PATHS = [
+    'M8.22266 2.45825C8.70579 2.45838 9.09766 2.85008 9.09766 3.33325V16.6663C9.09766 17.1494 8.70579 17.5411 8.22266 17.5413C7.73941 17.5413 7.34766 17.1495 7.34766 16.6663V3.33325C7.34766 2.85 7.73941 2.45825 8.22266 2.45825Z',
+    'M12.4443 4.62524C12.9276 4.62524 13.3193 5.01699 13.3193 5.50024V13.8333C13.3192 14.3164 12.9275 14.7083 12.4443 14.7083C11.9613 14.7081 11.5695 14.3163 11.5693 13.8333V5.50024C11.5693 5.01708 11.9612 4.62538 12.4443 4.62524Z',
+    'M4 6.95825C4.48325 6.95825 4.875 7.35 4.875 7.83325V12.1663C4.875 12.6495 4.48325 13.0413 4 13.0413C3.51675 13.0413 3.125 12.6495 3.125 12.1663V7.83325C3.125 7.35 3.51675 6.95825 4 6.95825Z',
+    'M16.667 7.45825C17.15 7.45852 17.542 7.85017 17.542 8.33325V11.6663C17.542 12.1493 17.15 12.541 16.667 12.5413C16.1837 12.5413 15.792 12.1495 15.792 11.6663V8.33325C15.792 7.85 16.1837 7.45825 16.667 7.45825Z'
+  ];
+  function primaryComposerControls() {
+    const form = composer()?.closest('form');
+    if (!form) return [];
+    return [...form.querySelectorAll('button.size-token-button-composer.bg-composer-primary')].filter(button =>
+      renderedComposerNode(button) && button.closest('form') === form);
+  }
+  function exactIcon(button, expected) {
+    const paths = button.querySelectorAll('svg path');
+    return paths.length === expected.length && expected.every((path, at) => paths[at].getAttribute('d') === path);
+  }
+  function isSendArrow(button) {
+    return !button.hasAttribute('data-state') && exactIcon(button, [SEND_ARROW_PATH]);
+  }
+  function isVoiceControl(button) {
+    return button.type === 'button' && button.getAttribute('data-state') === 'closed' && exactIcon(button, VOICE_PATHS);
+  }
   function stopControls() {
     const labelled = nativeComposerControls(STOP);
     if (labelled.length) return labelled;
-    const form = composer()?.closest('form');
-    if (!form) return [];
-    return [...form.querySelectorAll('button[type="button"].size-token-button-composer.bg-composer-primary')].filter(button => {
-      if (!renderedComposerNode(button) || button.closest('form') !== form || button.hasAttribute('data-state')) return false;
-      const paths = button.querySelectorAll('svg path');
-      return paths.length === 1 && paths[0].getAttribute('d') === STOP_SQUARE_PATH;
-    });
+    return primaryComposerControls().filter(button => button.type === 'button' &&
+      !button.hasAttribute('data-state') && exactIcon(button, [STOP_SQUARE_PATH]));
   }
 
   function stopButton() {
@@ -795,7 +824,9 @@ var CLF_DOM = (() => {
   function sendButton() {
     return safe(() => {
       const buttons = nativeComposerControls(SEND);
-      return buttons.length === 1 ? buttons[0] : null;
+      if (buttons.length) return buttons.length === 1 ? buttons[0] : null;
+      const primary = primaryComposerControls();
+      return primary.length === 1 && isSendArrow(primary[0]) ? primary[0] : null;
     }, null);
   }
 

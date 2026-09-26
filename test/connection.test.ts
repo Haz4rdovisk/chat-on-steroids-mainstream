@@ -161,6 +161,46 @@ describe('connection surface state', () => {
     }
   });
 
+  it.each([
+    { kind: 'openai', core: 'shared-id', plugins: 'shared-id', desktop: 'shared-id', warning: true },
+    { kind: 'openai', core: 'core-id', plugins: 'plugins-id', desktop: 'core-id', warning: false },
+    { kind: 'cloudflared', core: 'shared-id', plugins: 'shared-id', desktop: 'shared-id', warning: false },
+    { kind: 'openai', core: 'core-id', plugins: '', desktop: '', warning: false }
+  ])('warns only about admitted shared Secure Tunnel IDs ($kind, $plugins)', async ({ kind, core, plugins, desktop, warning }) => {
+    Object.assign(mocks.config.tunnel, { kind, tunnelId: core, pluginsTunnelId: plugins, desktopTunnelId: desktop });
+    const connection = await import('../src/main/connection.js');
+    const { logWarn } = await import('../src/main/logger.js');
+    vi.mocked(logWarn).mockClear();
+    try {
+      await connection.connect();
+      const said = vi.mocked(logWarn).mock.calls.map(call => call[0]).filter(line => line.includes('same Secure Tunnel ID'));
+      expect(said).toHaveLength(warning ? 1 : 0);
+      if (warning) {
+        expect(said[0]).toContain('core and plugins');
+        expect(said[0]).toContain('UNKNOWN_TOOL');
+        expect(said[0]).not.toContain('desktop'); // Saved but disabled.
+        expect(said[0]).not.toContain(core);
+      }
+      expect(connection.getStatus().state).toBe('connected');
+    } finally { await connection.disconnect(); mocks.config.tunnel.desktopTunnelId = ''; }
+  });
+
+  it('warns on a Settings-only tunnel collision without repeating on unrelated saves', async () => {
+    Object.assign(mocks.config.tunnel, { kind: 'openai', tunnelId: 'core-id', pluginsTunnelId: 'plugins-id' });
+    const connection = await import('../src/main/connection.js');
+    const { logWarn } = await import('../src/main/logger.js');
+    vi.mocked(logWarn).mockClear();
+    try {
+      await connection.connect();
+      mocks.config.tunnel.pluginsTunnelId = 'core-id';
+      await connection.applySettings();
+      await connection.applySettings();
+      expect(vi.mocked(logWarn).mock.calls.filter(call => call[0].includes('same Secure Tunnel ID'))).toHaveLength(1);
+      expect(mocks.endpointStop).not.toHaveBeenCalled();
+      expect(connection.getStatus().surfaces.find(surface => surface.id === 'plugins')?.state).toBe('live');
+    } finally { await connection.disconnect(); }
+  });
+
   it('ignores retired Plugins tunnel reports after changing only its tunnel', async () => {
     mocks.config.tunnel.kind = 'openai';
     mocks.config.tunnel.tunnelId = 'core-test';

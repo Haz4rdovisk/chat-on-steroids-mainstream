@@ -71,3 +71,39 @@ No commit, push or PR edit was performed during implementation/validation. The u
 subsequently authorized committing and publishing this block in both repositories and
 updating the existing upstream PR #345, preserving its title. That publication includes
 the previously validated session-integrity/send-listener commits; no installer is implied.
+
+## Authorized package and installed acceptance — 2026-09-26
+
+The user subsequently requested a new Internal installer and installation/testing on
+Rebecca. Internal head `086f0c3678649cb81dcc85eb034221842b581b06` was packaged;
+no production source was changed during this delivery. Upstream PR #345 CI run
+`36214947197` completed successfully on Windows x64, macOS arm64 and Linux x64.
+The packaged Windows runtime smoke passed (Electron, sharp, PTY and tree-sitter).
+
+Installer: `Chat-On-Steroids-Internal-20260926-086f0c3-x64.exe`, 173388746 bytes.
+SHA-256: `9EA6FF46013FFA8F071F2048D2C388FC617DF95A0F336EE2C184DB377DE2BB2B`.
+Local Downloads and remote Downloads copies matched before installation. The first
+transfer was interrupted; its stale SFTP process was retired and the completed retry
+was verified before execution. The installer exited successfully (task result 0).
+
+Installed payload matched the package:
+- app.asar: `78F3DCECAD78C5BAFF03243A107C9BCED21A731A03700779B94CA5142CCFBE48`
+- bundled and mirrored usage.js: `91A296B2FD3801FDC73032A901D4EE2DBFDE606A130E7108ECADF41A34434551`
+
+A new diagnostic conversation used the installed observer v3, without source injection.
+First send and follow-up each obtained native receipts, exactly two user messages and
+expected answers, and two completed turn records. The single update_plan call had
+request_id attribution to the exact same conversation. No duplicate sequence numbers
+or visible private-context leakage was observed. Both receipt checks remained visible;
+final controls had no active turn, stop pending or finish hold, and the composer returned
+to Send message. Worked for displayed 14s and 6s for the respective turns.
+
+This is installed-package smoke evidence, not a live reproduction of every split-id
+transport variant or a repeat of the earlier image/Compact/Design Mode E2E. The
+synthetic contradictory-owner/split-chain tests remain the evidence for those cases.
+
+After checking sessions and drafts were idle, diagnostics closed gracefully and the
+installed app reopened normally without debug arguments. Port 9223 had no listener.
+Only this round's three temporary scheduled tasks were removed; the preexisting SSH
+forward was reused and left untouched. No test/build remains running. These delivery
+records are uncommitted; no additional commit, push or PR edit was made this round.

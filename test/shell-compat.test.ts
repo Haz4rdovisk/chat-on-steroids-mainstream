@@ -173,7 +173,7 @@ it('reads the real shell composer, messages and tools through existing contracts
   expect(f.api.messages()).toEqual([]); // Slot keys alone are not provider identities.
   const { turns, rows } = await f.ask();
   expect(rows).toEqual([]); expect(turns).toHaveLength(1);
-  expect(turns[0]).toMatchObject({ turnId: TURN, conversationId: THREAD, conversationConflict: false, endMessageId: null });
+  expect(turns[0]).toMatchObject({ turnId: USER, conversationId: THREAD, conversationConflict: false, endMessageId: null });
   expect(turns[0].messages.map((m: any) => [m.role, m.rawMessageId, m.rawText])).toEqual([['user', USER, 'hello'], ['assistant', ANSWER, 'Answer']]);
   expect(turns[0].calls).toEqual([{ messageId: CALL, tool: 'read', order: 0, answered: false, requestId: null, createTime: null }]);
   expect(JSON.stringify(turns)).not.toContain('NEVER_COPY_TOOL_ARGS');
@@ -181,6 +181,50 @@ it('reads the real shell composer, messages and tools through existing contracts
   expect(f.api.turns().map((t: any) => t.role)).toEqual(['user', 'assistant']);
   expect(f.api.messages().map((m: any) => [m.id, m.role, m.text])).toEqual([[USER, 'user', 'hello'], [ANSWER, 'assistant', 'Answer']]);
   expect(f.api.presentationTurns().map((t: any) => t.role)).toEqual(['user', 'assistant']);
+});
+
+it('keeps one shell turn identity and exact message slots across positional search-key remounts', async () => {
+  const f = fixture();
+  const renameSearch = (next: string) => {
+    const previous = f.entry.id;
+    f.entry.id = next;
+    f.doc.querySelector('[data-content-search-turn-key]')!.setAttribute('data-content-search-turn-key', next);
+    for (const node of f.doc.querySelectorAll('[data-content-search-unit-key]')) {
+      node.setAttribute('data-content-search-unit-key', node.getAttribute('data-content-search-unit-key')!.replace(previous, next));
+    }
+  };
+  for (const key of ['fallback-turn-0', 'fallback-turn-7', TURN]) {
+    renameSearch(key);
+    const result = await f.ask();
+    expect(result.turns).toHaveLength(1);
+    expect(result.turns[0].turnId).toBe(USER);
+    expect(f.api.turns().map((turn: any) => turn.id)).toEqual([USER, USER]);
+    expect(f.api.messages().map((message: any) => message.id)).toEqual([USER, ANSWER]);
+  }
+});
+
+it.each(['foreign section', 'foreign entry', 'conflicting user', 'multiple users', 'positional only'])(
+  'rejects unproven shell turn identity: %s', async reason => {
+    const f = fixture();
+    if (reason === 'foreign section') f.doc.querySelector('[data-turn-key]')!.setAttribute('data-turn-key', OTHER);
+    if (reason === 'foreign entry') f.entry.id = OTHER;
+    if (reason === 'conflicting user') f.entry.turn.items[0].serverMessageId = OTHER;
+    if (reason === 'multiple users') f.entry.turn.items.push({ ...f.entry.turn.items[0], messageId: OTHER, serverMessageId: OTHER });
+    if (reason === 'positional only') {
+      f.doc.querySelector('[data-turn-key]')!.setAttribute('data-turn-key', 'fallback-turn-0');
+      f.doc.querySelector('[data-content-search-turn-key]')!.setAttribute('data-content-search-turn-key', 'fallback-turn-0');
+      f.entry.id = 'fallback-turn-0';
+      expect(f.api.turns()).toEqual([]);
+    }
+    expect((await f.ask()).turns).toEqual([]);
+    expect(f.api.messages()).toEqual([]);
+  });
+
+it('retains a stable search identity when the section key is positional', async () => {
+  const f = fixture();
+  f.doc.querySelector('[data-turn-key]')!.setAttribute('data-turn-key', 'fallback-turn-0');
+  expect((await f.ask()).turns[0].turnId).toBe(TURN);
+  expect(f.api.turns().map((turn: any) => turn.id)).toEqual([TURN, TURN]);
 });
 
 it.each(['in_progress', 'cancelled', 'complete', 'unknown', undefined])('does not invent a tool receipt from turn status %s', async status => {
@@ -372,6 +416,36 @@ it('captures request identity from the shell direct mapping snapshot', async () 
   await vi.waitFor(() => expect(r.sent).toContainEqual(expect.objectContaining({ type: 'correlate',
     conversationId: THREAD, calls: expect.arrayContaining([expect.objectContaining({ requestId: OTHER })]) })));
   (f.win as any).__CLF_CONTENT_RECORDER__.stop();
+});
+
+it.each(['many-rows', 'wide-row'])('reads a complete compiler cache within the shared scan budget (%s)', async shape => {
+  const f = fixture(), { owner, snapshot } = liveShellMapping(f, true);
+  const data: unknown[][] = shape === 'many-rows' ? Array.from({ length: 42 }, () => [null]) : [Array(1100).fill(null)];
+  data.at(-1)![data.at(-1)!.length - 1] = snapshot;
+  owner.updateQueue.memoCache.data = data;
+  const turn = (await f.ask()).turns[0];
+  expect(turn.requests).toContainEqual(expect.objectContaining({ requestId: OTHER, messageId: CALL }));
+  expect(JSON.stringify(turn)).not.toMatch(/PRIVATE_REASONING_CONTENT|DO_NOT_COPY/);
+});
+
+it.each(['row-budget', 'cell-budget', 'late-conflict', 'wide-conflict'])
+('rejects incomplete or contradictory compiler evidence even after a valid hook (%s)', async shape => {
+  const f = fixture(), { owner, snapshot, mapping } = liveShellMapping(f);
+  const conflicting = { ...mapping, [CALL]: { ...mapping[CALL], message: {
+    ...mapping[CALL].message, metadata: { request_id: 'wfr-conflicting-cache' }
+  } } };
+  let data: unknown[][];
+  if (shape === 'row-budget') data = Array.from({ length: 2048 }, () => []);
+  else if (shape === 'cell-budget') data = [Array(2048).fill(null)];
+  else if (shape === 'late-conflict') data = [...Array.from({ length: 41 }, () => []), [conflicting]];
+  else data = [[...Array(1099).fill(null), conflicting]];
+  owner.updateQueue = { memoCache: { data } };
+  // A rejected live scan must not silently fall back to plausible history.
+  f.queries.push({ queryKey: ['chatgpt-conversation', THREAD], state: { data: snapshot.renderedConversation } });
+  const turn = (await f.ask()).turns[0];
+  expect(turn).toBeDefined();
+  expect(turn.requests).toEqual([]);
+  expect(turn.activities).toEqual([]);
 });
 
 it.each(['foreign-owner', 'missing-user', 'wrong-user', 'two-mappings', 'getter'])
@@ -780,6 +854,79 @@ it('refuses ambiguous translated controls and preserves explicit Stop priority',
   first.dataset.testid = 'stop-button';
   expect(f.api.stopButton()).toBe(first);
 });
+
+// Native primary controls captured on the signed-in diagnostic page 2026-09-26.
+const sendArrow = 'M9.33467 16.6663V4.93978L4.6374 9.63704L4.1667 9.16634L3.69599 8.69661L9.52998 2.86263L9.63447 2.77767C9.8925 2.60753 10.2433 2.63564 10.4704 2.86263L16.3034 8.69661L16.3884 8.80111C16.5588 9.05922 16.5306 9.40982 16.3034 9.63704C16.0762 9.86414 15.7255 9.89242 15.4675 9.722L15.363 9.63704L10.6647 4.9388V16.6663C10.6647 17.0336 10.367 17.3314 9.99971 17.3314C9.63259 17.3312 9.33467 17.0335 9.33467 16.6663ZM4.6374 9.63704C4.3777 9.89674 3.95569 9.89674 3.69599 9.63704C3.43657 9.37744 3.43668 8.95628 3.69599 8.69661L4.6374 9.63704Z';
+const voicePaths = [
+    'M8.22266 2.45825C8.70579 2.45838 9.09766 2.85008 9.09766 3.33325V16.6663C9.09766 17.1494 8.70579 17.5411 8.22266 17.5413C7.73941 17.5413 7.34766 17.1495 7.34766 16.6663V3.33325C7.34766 2.85 7.73941 2.45825 8.22266 2.45825Z',
+    'M12.4443 4.62524C12.9276 4.62524 13.3193 5.01699 13.3193 5.50024V13.8333C13.3192 14.3164 12.9275 14.7083 12.4443 14.7083C11.9613 14.7081 11.5695 14.3163 11.5693 13.8333V5.50024C11.5693 5.01708 11.9612 4.62538 12.4443 4.62524Z',
+    'M4 6.95825C4.48325 6.95825 4.875 7.35 4.875 7.83325V12.1663C4.875 12.6495 4.48325 13.0413 4 13.0413C3.51675 13.0413 3.125 12.6495 3.125 12.1663V7.83325C3.125 7.35 3.51675 6.95825 4 6.95825Z',
+    'M16.667 7.45825C17.15 7.45852 17.542 7.85017 17.542 8.33325V11.6663C17.542 12.1493 17.15 12.541 16.667 12.5413C16.1837 12.5413 15.792 12.1495 15.792 11.6663V8.33325C15.792 7.85 16.1837 7.45825 16.667 7.45825Z'
+  ];
+function primaryControl(f: ReturnType<typeof fixture>, kind: 'send' | 'voice') {
+  f.doc.querySelector('button[type="submit"]')!.remove();
+  const form = f.doc.querySelector('form')!;
+  const button = f.doc.createElement('button'); button.type = 'button';
+  button.className = 'size-token-button-composer bg-composer-primary';
+  button.setAttribute('aria-label', kind === 'send' ? 'Gönder' : 'Ses başlat');
+  if (kind === 'voice') button.dataset.state = 'closed';
+  button.innerHTML = '<svg>' + (kind === 'send' ? [sendArrow] : voicePaths).map(path => '<path d="' + path + '"></path>').join('') + '</svg>';
+  form.append(button); return button;
+}
+it('finds a localized native Send and keeps disabled state authoritative', async () => {
+  const f = fixture(), button = primaryControl(f, 'send');
+  const box = f.api.composer(); box.textContent = 'diagnostic';
+  const clicked = vi.fn(() => { box.textContent = ''; });
+  button.addEventListener('click', clicked);
+  expect(f.api.sendButton()).toBe(button);
+  button.disabled = true;
+  expect(f.api.sendButton()).toBe(button);
+  expect(await f.api.send({ acceptanceTimeoutMs: 20 })).toBe(false);
+  button.disabled = false; button.setAttribute('aria-disabled', 'true');
+  expect(await f.api.send({ acceptanceTimeoutMs: 20 })).toBe(false);
+  expect(clicked).not.toHaveBeenCalled();
+  button.removeAttribute('aria-disabled');
+  expect(await f.api.send({ acceptanceTimeoutMs: 100 })).toBe(true);
+  expect(clicked).toHaveBeenCalledOnce();
+});
+it.each(['unknown', 'prefix', 'voice', 'popup', 'duplicate', 'hidden', 'foreign form', 'history', 'no slot'])(
+  'does not invent a native Send target: %s', reason => {
+    const f = fixture(), button = primaryControl(f, reason === 'voice' ? 'voice' : 'send');
+    if (reason === 'unknown') button.querySelector('path')!.setAttribute('d', 'M0 0L20 20');
+    if (reason === 'prefix') button.querySelector('path')!.setAttribute('d', sendArrow + ' M0 0L20 20');
+    if (reason === 'popup') button.dataset.state = 'open';
+    if (reason === 'duplicate') button.after(button.cloneNode(true));
+    if (reason === 'hidden') button.hidden = true;
+    if (reason === 'foreign form') { const form = f.doc.createElement('form'); f.doc.body.append(form); form.append(button); }
+    if (reason === 'history') f.doc.querySelector('[data-turn-key]')!.append(button);
+    if (reason === 'no slot') button.className = '';
+    expect(f.api.sendButton()).toBeNull();
+  });
+it.each(['send', 'voice'] as const)('an exact idle %s clears only the stale busy hint, never completes the turn', async kind => {
+  const f = fixture(); await f.ask();
+  expect(f.api.generating()).toBe(true);
+  primaryControl(f, kind);
+  expect(f.api.generating()).toBe(false);
+  expect((await f.ask()).turns[0].endMessageId).toBeNull();
+  expect(f.api.stopButton()).toBeNull();
+  if (kind === 'voice') expect(f.api.sendButton()).toBeNull();
+  translatedStop(f);
+  expect(f.api.generating()).toBe(true); // Native Stop always vetoes idle.
+});
+it.each(['missing', 'unknown', 'disabled', 'aria-disabled', 'popup', 'duplicate', 'hidden'])(
+  'retains the busy hint when idle is not proven: %s', async reason => {
+    const f = fixture(); await f.ask();
+    const button = primaryControl(f, 'send');
+    if (reason === 'missing') button.remove();
+    if (reason === 'unknown') button.querySelector('path')!.setAttribute('d', 'M0 0');
+    if (reason === 'disabled') button.disabled = true;
+    if (reason === 'aria-disabled') button.setAttribute('aria-disabled', 'true');
+    if (reason === 'popup') button.dataset.state = 'open';
+    if (reason === 'duplicate') button.after(button.cloneNode(true));
+    if (reason === 'hidden') button.hidden = true;
+    expect(f.api.generating()).toBe(true);
+    expect((await f.ask()).turns[0].endMessageId).toBeNull();
+  });
 
 it('preserves prepared multiline text through the shell editor serializer', () => {
   const f = fixture(), edit = editing(f);

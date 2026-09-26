@@ -9556,13 +9556,13 @@ describe('how a turn is recorded as having ended', () => {
    * sitting on the error. The wording is what makes it recoverable; the page's own live
    * generation is what names the turn.
    */
-  it('gives a transport failure announced above the thread the turn it broke', async () => {
+  it.each(['Message delivery timed out. Please try again.', 'ChatGPT stream recovery polling timed out'])('gives the transport banner %s the turn it broke without stopping native work', async banner => {
     live = await harness();
     startGenerating(live.document);
     assistantTurn(live.document, 'turn-1', []);
     live.hook.observe();
     await settle();
-    alertBanner(live.document, 'Message delivery timed out. Please try again.');
+    alertBanner(live.document, banner);
     live.hook.observe();
     await settle();
 
@@ -9615,13 +9615,13 @@ describe('how a turn is recorded as having ended', () => {
     });
   });
 
-  it('keeps a generating transport failure open through reload and records the recovered final under its original identity', async () => {
+  it.each(['Connection interrupted. Waiting for the complete answer', 'ChatGPT stream recovery polling timed out. Retry'])('keeps a generating transport failure %s open through reload and records the recovered final under its original identity', async banner => {
     live = await harness();
     startGenerating(live.document);
     assistantTurn(live.document, 'transport-live', []);
     live.hook.observe(); await settle();
     const id = emitted(live.sent, 'turn_start').at(-1)!.event.turnId as string;
-    alertBanner(live.document, 'Connection interrupted. Waiting for the complete answer');
+    alertBanner(live.document, banner);
     live.hook.observe(); await settle();
     live.advance(live.hook.TURN_SETTLE_MS * 2);
     live.hook.observe(); await settle(); await live.hook.flush();
@@ -9640,7 +9640,7 @@ describe('how a turn is recorded as having ended', () => {
       userTurn(document, 'transport-user', 'Finish the task');
       assistantTurn(document, 'transport-live', []);
       startGenerating(document, { send: false });
-      alertBanner(document, 'Connection interrupted. Waiting for the complete answer');
+      alertBanner(document, banner);
     });
     live.hook.observe(); await settle();
     expect(emitted(live.sent, 'turn_start')).toHaveLength(0);
@@ -9779,7 +9779,7 @@ describe('how a turn is recorded as having ended', () => {
     expect(emitted(live.sent, 'chat_error')).toEqual([]);
   });
 
-  it('does not turn ordinary assistant prose into an error because it quotes transport-failure wording', async () => {
+  it.each(['Connection interrupted. Waiting for the complete answer', 'ChatGPT stream recovery polling timed out'])('does not turn ordinary assistant prose quoting %s into an error', async banner => {
     live = await harness();
     startGenerating(live.document);
     const section = assistantTurn(live.document, 'turn-explaining-an-error', []);
@@ -9787,7 +9787,7 @@ describe('how a turn is recorded as having ended', () => {
       live.document,
       section,
       'assistant-explanation',
-      'I found the earlier failure. The page showed “Connection interrupted. Waiting for the complete answer”, then recovered and kept working.'
+      `I found the earlier failure. The page showed “${banner}”, then recovered and kept working.`
     );
 
     live.hook.observe();

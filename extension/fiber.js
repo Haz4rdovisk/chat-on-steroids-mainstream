@@ -1563,9 +1563,12 @@
         inspect(state); if (Array.isArray(state)) inspect(state[0]);
       }
       const data = at.updateQueue?.memoCache?.data;
-      if (!Array.isArray(data) || data.length > 32) continue;
+      if (!Array.isArray(data)) continue;
+      // Compiler cache shape is not a version contract. Charge both rows and
+      // cells to the shared budget; an incomplete scan cannot exclude a conflict.
       for (const row of data) {
-        if (!Array.isArray(row) || row.length > 1024) continue;
+        if (--remaining < 0) break;
+        if (!Array.isArray(row)) continue;
         for (const item of row) { if (--remaining < 0) break; inspect(item); }
       }
     }
@@ -1727,7 +1730,14 @@
     for (let at = fiber, up = 0; at && up < 16; up++, at = at.return) {
       if (Array.isArray(at.memoizedProps?.entry?.turn?.items)) { entry = at.memoizedProps.entry; break; }
     }
-    if (!entry || !turnId || entry.id !== turnId || entry.turn.items.length > MAX_ROWS) return null;
+    if (!entry || !turnId || entry.turn.items.length > MAX_ROWS) return null;
+    const search = section.querySelector('[data-content-search-turn-key]')?.getAttribute('data-content-search-turn-key');
+    if (!search || entry.id !== search) return null;
+    // A section's stable key can name its user message while entry.id is a
+    // positional search key. Prove that relation in this exact typed exchange.
+    const users = entry.turn.items.filter(item => item?.type === 'user-message');
+    if (turnId !== entry.id && (users.length !== 1 ||
+        turnId !== (str(users[0].messageId) || str(users[0].serverMessageId)))) return null;
     const messages = [], calls = [], slots = [], seen = new Set(), callSources = new Map(), executionIds = [], images = new Map();
     let lastAnswer = null;
     const remember = id => { if (!id || seen.has(id)) return false; seen.add(id); return true; };
@@ -1745,7 +1755,7 @@
         messages.push({ id, author: { role }, content: { content_type: 'text', parts: [typeof text === 'string' ? text : ''] },
           channel: user ? null : final ? 'final' : 'commentary', end_turn: completed,
           status: completed ? 'finished_successfully' : 'in_progress', metadata: {} });
-        const key = `${turnId}:${index}:${role}`;
+        const key = `${entry.id}:${index}:${role}`;
         const nodes = [...section.querySelectorAll('[data-content-search-unit-key]')].filter(node =>
           node.closest('[data-turn-key]') === section && node.getAttribute('data-content-search-unit-key') === key);
         if (nodes.length === 1) slots.push({ node: nodes[0], id });
@@ -1814,7 +1824,10 @@
     const groups = [];
     for (let at = 0; at < sections.length; at++) {
       const section = sections[at];
-      const id = section.matches?.(SHELL_TURN) ? str(section.querySelector('[data-content-search-turn-key]')?.getAttribute('data-content-search-turn-key')) : str(section.getAttribute('data-turn-id'));
+      const id = section.matches?.(SHELL_TURN)
+        ? [str(section.getAttribute('data-turn-key')), str(section.querySelector('[data-content-search-turn-key]')?.getAttribute('data-content-search-turn-key'))]
+          .find(value => value && !/^fallback-turn-\d+$/.test(value)) || null
+        : str(section.getAttribute('data-turn-id'));
       const previous = groups[groups.length - 1];
       if (id && previous && previous.turnId === id) previous.sections.push(section);
       else groups.push({ turnId: id, sections: [section] });

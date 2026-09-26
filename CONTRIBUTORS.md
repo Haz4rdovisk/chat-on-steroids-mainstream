@@ -155,6 +155,30 @@ invalidation on contradictory evidence. The existing bridge ingress proof is unc
 
 ## Reports, review and proposed work
 
+The bounded React compiler-cache scan adapts [@Dolipr1ne](https://github.com/Dolipr1ne)'s
+[#417](https://github.com/totec448-spec/chat-on-steroids/pull/417): rows and cells share
+the existing budget, retaining rejection of incomplete or conflicting evidence.
+Only this scan-budget slice is incorporated; the PR's rich-content, model-selection
+and Stop/Send changes are not included by this adaptation.
+
+The September 26 diagnostic hardening adapts
+[@Gokuencinar](https://github.com/Gokuencinar)'s exact stream-recovery timeout classification
+from [#439](https://github.com/totec448-spec/chat-on-steroids/pull/439), and
+[@Maximapple](https://github.com/Maximapple)'s recovery-release diagnostics
+([#424](https://github.com/totec448-spec/chat-on-steroids/pull/424)) and shared tunnel warning
+([#421](https://github.com/totec448-spec/chat-on-steroids/pull/421)).
+The adaptations use the existing durable input row for log deduplication, clear its old
+failure on a confirmed receipt, and check admitted tunnel starts including Settings changes.
+No recovery scheduling or tunnel routing policy is imported.
+
+The coordinated shell turn identity adapts [@Maximapple](https://github.com/Maximapple)'s
+[#423](https://github.com/totec448-spec/chat-on-steroids/pull/423), retaining exact typed
+user/entry proof in MAIN. Native composer adaptations of
+[#418](https://github.com/totec448-spec/chat-on-steroids/pull/418) and
+[#422](https://github.com/totec448-spec/chat-on-steroids/pull/422) use exact observed
+Send/Voice icons instead of treating every non-Stop primary control as idle or Send.
+These are focused adaptations, not merges of their stacked branches.
+
 The September 22 selective review adapts [@lavalava45](https://github.com/lavalava45)'s
 Plugins route correction (#351) and explicit refresh retry (#363),
 [@27mfp](https://github.com/27mfp)'s project-order proposal (#355),

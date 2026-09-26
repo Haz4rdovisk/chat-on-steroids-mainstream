@@ -1742,6 +1742,10 @@ transcript/extension surfaces. Hidden, inert or quoted controls grant no action;
 buttons are ambiguous. The alternate shell's `Stop` label is recognized only inside its native
 composer form. Before assistant prose mounts, an app Stop command can use the exact accepted
 question, revalidated against the redeemed command after every await; the click is not completion.
+Localized shell Send uses the exact observed arrow in the unique visible primary composer
+slot, never an unknown icon by exclusion. An enabled exact Send/Voice control may supersede
+a stale shell in_progress busy hint; missing, unknown, disabled or ambiguous controls cannot.
+Native Stop wins, and native terminal evidence still owns completion.
 The existing transcript observer also follows composer-side relabel/hide
 mutations so hidden tabs notice Stop transitions without waiting for a throttled timer.
 Submission observes native Send readiness and acceptance within one 30-second deadline, freezes
@@ -1814,6 +1818,13 @@ Before history hydration, a bounded read of published React hook/compiler values
 native `renderedConversation`/`renderedTurns` snapshot. Its conversation owner, actual user and
 same turn object must match. Only the newest exact turn may add early request metadata from its
 explicit current-node parent path back to that user; no guessed child or unselected prose is read.
+Compiler rows and cells share the existing total scan budget with hooks. Cache dimensions
+alone cannot discard a source: exhausted or conflicting live evidence rejects the join,
+including fallback to an older history cache.
+Shell DOM and MAIN use the stable section turn key (or a non-positional search key).
+The search entry id remains only the exact slot address. MAIN proves the section key
+against that entry or its unique typed user message; positional-only or conflicting
+identity cannot publish a transcript. Remounting fallback-turn-N must not rename work.
 The DOM's Fiber pointer can name the prior render. Read the committed root's child path and
 its current ancestors, including memoized children with old return pointers. Never choose the
 newer-looking alternate or mutate React. Path views are bounded and cached only within one
@@ -2251,6 +2262,8 @@ A claimed attempt is never reissued on missing acknowledgement. Progress stays a
 the original source turn. A recoverable transport banner does not end a natively generating
 turn; exact Thinking failed uses the activity-based two/five-minute silence rule. Exact native final evidence
 supersedes a stale transport banner and retains ordinary Goal/Loop eligibility.
+The exact native “ChatGPT stream recovery polling timed out” banner uses that same
+transport classification; quoted prose and access-limit notices retain their separate rules.
 
 Automatic response recovery follows the shared decision and conditional busy wait above.
 An automatically withdrawn rescue with no Send authorization or delivery receipt does not
@@ -2263,6 +2276,10 @@ filed automatically: recovery uses Continue until a canonical final appears.
 Automatic Continue reuses the durable input owner, but its frozen text and source are not
 editable or reorderable as authored tasks. Queue mutation APIs exclude recovery rows; the
 renderer labels them Automatic Continue and preserves cancellation before browser handout.
+Pre-authorization preparation failures retain a bounded reason in the same outbox row when
+releasing its claim. A changed reason is logged only after durable publication; repeated
+claims/restoration do not repeat it. A confirmed recovery receipt clears the old failure.
+This diagnostic does not change pickup deadlines, authorization or ambiguous-send custody.
 Continue, queue and Goal/Loop share pickup gaps of 2/5/10/15 minutes, then retain fifteen until
 expiry, including Pro after its initial ten-minute (Thinking failed: five-minute) silence and
 conditional five-minute wait.
@@ -3261,6 +3278,9 @@ Approved-root requirements are surface/capability decisions, not whether the ext
 Separate local listener health, public tunnel reachability, ChatGPT connector configuration and
 browser attachment in both status and diagnosis. Stale connect/disconnect results cannot replace
 a newer endpoint. Secret paths/tokens are not public diagnostics.
+Starting an eligible optional OpenAI connector warns if its Secure Tunnel ID matches a
+transport already owned by this connection, including Settings-only restarts. Saved disabled
+connectors do not participate. The warning names surfaces, never IDs, and does not block startup.
 
 Disconnect immediately publishes `disconnecting` and coalesces repeated clicks into one
 transition. MCP drain protects only complete requests admitted to the adapter: idle TCP,
