@@ -155,6 +155,12 @@ invalidation on contradictory evidence. The existing bridge ingress proof is unc
 
 ## Reports, review and proposed work
 
+Managed-tab departure classification adapts
+[@Maximapple](https://github.com/Maximapple)'s
+[#446](https://github.com/totec448-spec/chat-on-steroids/pull/446).
+The adaptation retains exact successful-removal receipts across MV3 suspension,
+preserves manual-close precedence, and uses each variant's existing browser host.
+
 The two additional native transport-error wordings adapt
 [@Maximapple](https://github.com/Maximapple)'s
 [#450](https://github.com/totec448-spec/chat-on-steroids/pull/450).
