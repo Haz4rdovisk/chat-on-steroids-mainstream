@@ -13822,6 +13822,47 @@ describe('the fresh chat the app opened', () => {
     expect(composerText(live.document)).toBe('');
   });
 
+  it.each(['click', 'submit', 'keydown'] as const)('retires native send capture and keeps its successor single-owned (%s)', async type => {
+    live = await harness();
+    const win = live.window as any;
+    const composer = live.document.querySelector('#prompt-textarea')!;
+    composer.textContent = 'Preserve this authored draft';
+    const readAttachments = vi.spyOn(win.CLF_DOM, 'composerAttachmentNames');
+    const dispatch = () => {
+      if (type === 'click') {
+        live!.document.querySelector('[data-testid="send-button"]')!
+          .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      } else if (type === 'submit') {
+        composer.parentElement!.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
+      } else {
+        composer.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      }
+    };
+    // A healthy incumbent wins reinjection; it must still capture the native event once.
+    win.eval(contentSource);
+    readAttachments.mockClear();
+    dispatch();
+    expect(readAttachments).toHaveBeenCalledTimes(1);
+
+    const predecessor = win.__CLF_CONTENT_RECORDER__;
+    predecessor.stop();
+    readAttachments.mockClear();
+    dispatch();
+    expect(readAttachments, 'the retired recorder still captured a send').not.toHaveBeenCalled();
+    expect(composer.textContent).toBe('Preserve this authored draft');
+
+    win.CLF_TEST_HOOK = (api: Hook) => { live!.hook = api; };
+    win.eval(contentSource);
+    await settle();
+    expect(win.__CLF_CONTENT_RECORDER__).not.toBe(predecessor);
+    // An old stop callback cannot remove the replacement's listeners.
+    predecessor.stop();
+    readAttachments.mockClear();
+    dispatch();
+    expect(readAttachments).toHaveBeenCalledTimes(1);
+    expect(composer.textContent).toBe('Preserve this authored draft');
+  });
+
   it('removes predecessor body UI and delegated DOM handlers during recorder takeover', async () => {
     live = await harness();
     expect(live.listenerCounts()).toEqual({ runtime: 1, storage: 1 });

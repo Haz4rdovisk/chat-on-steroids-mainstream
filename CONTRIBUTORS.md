@@ -136,6 +136,17 @@ whole-message unescape proposal is not used: authored suffixes and the exact sha
 frame parser remain unchanged. An independent regression rejects length compensation
 by hard-break escapes in damaged frames.
 
+The September 25 send-listener cleanup adapts [@Gokuencinar](https://github.com/Gokuencinar)'s
+recorder-lifetime slice from [#392](https://github.com/totec448-spec/chat-on-steroids/pull/392):
+native click/submit/Enter capture uses the existing listener cleanup and refuses work after
+recorder retirement. The PR's Goal, bridge, packaging and other changes are not included.
+
+The September 25 unreadable-session hardening adapts
+[@Maximapple](https://github.com/Maximapple)'s [#399](https://github.com/totec448-spec/chat-on-steroids/pull/399).
+This adaptation rejects incomplete identity catalogs rather than deriving ownership from their
+readable subset, preserves metadata-only rebinding authority, and reconciles uncertain appends
+through the existing session queue before allocating another sequence.
+
 ## Reports, review and proposed work
 
 The September 22 selective review adapts [@lavalava45](https://github.com/lavalava45)'s

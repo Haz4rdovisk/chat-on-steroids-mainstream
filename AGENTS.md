@@ -1270,6 +1270,14 @@ chronological anchors across revisions. Metadata coalesces ordinary updates but 
 at ownership boundaries; it can rebuild history-derived fields without inventing an empty session
 when recovery lacks proof. Legacy files overlay lazily rather than triggering a whole-history rewrite.
 
+Unreadable metadata/history is not empty or absent history. Filesystem access/resource errors
+propagate before reconstruction can replace a checkpoint or a catalog can prove ownership.
+Only missing/damaged primary metadata may use the validated backup; a locked primary may hide
+a newer conversation rebind. A failed catalog pass is not cached, and indexed-owner read failures
+cannot become cached misses or unique-owner proof. An uncertain append whose tail is unreadable
+marks only its existing live writer for reconciliation: the same per-session queue must restore
+its durable snapshot before another mutation allocates a sequence. No retry timer is added.
+
 Native image-only user messages keep their exact message identity, empty authored text and
 bounded attachment metadata. They participate in the same turn/receipt chronology as text and
 render an attachment placeholder immediately. Native metadata grants no local file custody;

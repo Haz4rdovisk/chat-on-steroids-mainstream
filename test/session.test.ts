@@ -532,6 +532,198 @@ describe('session store', () => {
     }
   });
 
+  it.each(['EACCES', 'EBUSY', 'EMFILE'])('does not infer an absent owner from unreadable metadata (%s)', async code => {
+    const conversationId = `conv-unreadable-${code}`;
+    const created = await createSession({ conversationId, title: 'durable owner' });
+    await flushSessions();
+    resetRecorderForTests();
+    resetSessionStoreForTests();
+    const folder = path.join(sessionsRoot(), created.id);
+    const before = await fs.readdir(sessionsRoot());
+    const realRead = fs.readFile.bind(fs);
+    const blocked = path.join(folder, 'meta.json');
+    const read = vi.spyOn(fs, 'readFile').mockImplementation((async (target, ...args) => {
+      if (String(target) === blocked) throw Object.assign(new Error('metadata temporarily unavailable'), { code });
+      return Reflect.apply(realRead, fs, [target, ...args]);
+    }) as typeof fs.readFile);
+    try {
+      await expect(sessionForConversation(conversationId)).rejects.toMatchObject({ code });
+      expect(await fs.readdir(sessionsRoot())).toEqual(before);
+    } finally {
+      read.mockRestore();
+    }
+    // No reset: a failed scan must not poison either the catalog or the recorder's miss cache.
+    expect(await sessionForConversation(conversationId)).toBe(created.id);
+  });
+
+  it('does not replace unreadable current attachment metadata with an older backup', async () => {
+    const created = await createSession({ conversationId: 'unreadable-before-rebind' });
+    expect(await rebindSession(created.id, 'unreadable-before-rebind', 'unreadable-after-rebind')).toBe(true);
+    await flushSessions();
+    resetSessionStoreForTests();
+    const primary = path.join(sessionsRoot(), created.id, 'meta.json');
+    const contents = await fs.readFile(primary, 'utf8');
+    expect(JSON.parse(await fs.readFile(path.join(sessionsRoot(), created.id, 'meta.backup.json'), 'utf8'))
+      .conversationId).toBe('unreadable-before-rebind');
+    const realRead = fs.readFile.bind(fs);
+    const read = vi.spyOn(fs, 'readFile').mockImplementation((async (target, ...args) => {
+      if (String(target) === primary) throw Object.assign(new Error('locked primary'), { code: 'EBUSY' });
+      return Reflect.apply(realRead, fs, [target, ...args]);
+    }) as typeof fs.readFile);
+    try {
+      await expect(getSession(created.id)).rejects.toMatchObject({ code: 'EBUSY' });
+      expect(await realRead(primary, 'utf8')).toBe(contents);
+    } finally {
+      read.mockRestore();
+    }
+    expect((await getSession(created.id))?.conversationId).toBe('unreadable-after-rebind');
+  });
+
+  it('refuses a cached identity lookup when its owner becomes unreadable and recovers without restart', async () => {
+    const conversationId = 'cached-unreadable-owner';
+    const created = await createSession({ conversationId });
+    await flushSessions();
+    resetSessionStoreForTests();
+    expect((await findSessionByConversation(conversationId))?.id).toBe(created.id);
+    const primary = path.join(sessionsRoot(), created.id, 'meta.json');
+    const realRead = fs.readFile.bind(fs);
+    const read = vi.spyOn(fs, 'readFile').mockImplementation((async (target, ...args) => {
+      if (String(target) === primary) throw Object.assign(new Error('locked primary'), { code: 'EBUSY' });
+      return Reflect.apply(realRead, fs, [target, ...args]);
+    }) as typeof fs.readFile);
+    try {
+      await expect(findSessionByConversation(conversationId, { requireUnique: true })).rejects.toMatchObject({ code: 'EBUSY' });
+      await expect(findSessionByConversation(conversationId, { includeHistorical: true })).rejects.toMatchObject({ code: 'EBUSY' });
+    } finally {
+      read.mockRestore();
+    }
+    expect((await findSessionByConversation(conversationId))?.id).toBe(created.id);
+  });
+
+  it.each(['stat', 'open'] as const)('does not reset a durable journal after a failed %s', async method => {
+    const created = await createSession({ conversationId: `locked-journal-${method}` });
+    await appendEvent(created.id, { kind: 'turn_start', source: 'extension', time: 1, turnId: 'retained-turn' });
+    await flushSessions();
+    resetSessionStoreForTests();
+    const folder = path.join(sessionsRoot(), created.id);
+    const primary = await fs.readFile(path.join(folder, 'meta.json'), 'utf8');
+    const journal = path.join(folder, 'events.jsonl');
+    const original = fs[method].bind(fs);
+    const spy = vi.spyOn(fs, method).mockImplementation((async (target: unknown, ...args: unknown[]) => {
+      if (String(target) === journal) throw Object.assign(new Error('journal locked'), { code: 'EBUSY' });
+      return Reflect.apply(original, fs, [target, ...args]);
+    }) as never);
+    try {
+      await expect(getSession(created.id)).rejects.toMatchObject({ code: 'EBUSY' });
+      expect(await fs.readFile(path.join(folder, 'meta.json'), 'utf8')).toBe(primary);
+    } finally { spy.mockRestore(); }
+    expect((await getSession(created.id))?.activeTurnId).toBe('retained-turn');
+    expect((await appendEvent(created.id, { kind: 'turn_end', source: 'extension', time: 2,
+      turnId: 'retained-turn', outcome: 'completed' })).seq).toBe(2);
+  });
+
+  it.each([false, true])('reconciles an uncertain append before admitting a canonical writer (committed=%s)', async committed => {
+    const created = await createSession({ title: 'uncertain append' });
+    await appendEvent(created.id, { kind: 'note', source: 'app', time: 0,
+      message: { text: 'before', chars: 6, truncated: false } });
+    await flushSessions();
+    const journal = path.join(sessionsRoot(), created.id, 'events.jsonl');
+    const originalAppend = fs.appendFile.bind(fs);
+    const originalOpen = fs.open.bind(fs);
+    const diskError = new Error('append completion uncertain');
+    const append = vi.spyOn(fs, 'appendFile').mockImplementationOnce(async (...args) => {
+      if (committed) await Reflect.apply(originalAppend, fs, args);
+      throw diskError;
+    });
+    const read = vi.spyOn(fs, 'open').mockImplementation((async (target, ...args) => {
+      if (String(target) === journal) throw Object.assign(new Error('journal locked'), { code: 'EBUSY' });
+      return Reflect.apply(originalOpen, fs, [target, ...args]);
+    }) as typeof fs.open);
+    try {
+      await expect(appendEvent(created.id, { kind: 'turn_start', source: 'extension', time: 1,
+        turnId: 'uncertain-turn' })).rejects.toBe(diskError);
+      await expect(upsertMessageEvent(created.id, { kind: 'assistant_message', source: 'extension', time: 2,
+        messageId: 'must-wait', final: false, message: { text: 'reply', chars: 5, truncated: false } })).rejects.toMatchObject({ code: 'EBUSY' });
+    } finally { append.mockRestore(); read.mockRestore(); }
+    const result = await upsertMessageEvent(created.id, { kind: 'assistant_message', source: 'extension', time: 2,
+      messageId: 'must-wait', final: false, message: { text: 'reply', chars: 5, truncated: false } });
+    expect(result.event.seq).toBe(committed ? 3 : 2);
+    expect((await readEvents(created.id)).map(event => event.seq)).toEqual(committed ? [1, 2, 3] : [1, 2]);
+    expect((await getSession(created.id))?.activeTurnId).toBe(committed ? 'uncertain-turn' : null);
+  });
+
+  it('does not infer a unique owner while another indexed owner is unreadable', async () => {
+    const conversationId = 'ambiguous-unreadable-owner';
+    await createSession({ conversationId });
+    const second = await createSession({ conversationId });
+    await flushSessions();
+    resetSessionStoreForTests();
+    expect(await findSessionByConversation(conversationId, { requireUnique: true })).toBeNull();
+    const primary = path.join(sessionsRoot(), second.id, 'meta.json');
+    const original = fs.readFile.bind(fs);
+    const spy = vi.spyOn(fs, 'readFile').mockImplementation((async (file, ...args) => {
+      if (String(file) === primary) throw Object.assign(new Error('owner locked'), { code: 'EBUSY' });
+      return Reflect.apply(original, fs, [file, ...args]);
+    }) as typeof fs.readFile);
+    try {
+      await expect(findSessionByConversation(conversationId, { requireUnique: true })).rejects.toMatchObject({ code: 'EBUSY' });
+    } finally { spy.mockRestore(); }
+    expect(await findSessionByConversation(conversationId, { requireUnique: true })).toBeNull();
+  });
+
+  it.each(['legacy', 'shard', 'directory'] as const)('does not reconstruct from unreadable canonical history (%s)', async kind => {
+    const created = await createSession({ title: 'retained canonical history' });
+    await upsertMessageEvent(created.id, { kind: 'user_message', source: 'extension', time: 1,
+      messageId: 'retained-question', message: { text: 'question', chars: 8, truncated: false } });
+    await flushSessions();
+    resetSessionStoreForTests();
+    const folder = path.join(sessionsRoot(), created.id);
+    const primary = await fs.readFile(path.join(folder, 'meta.json'), 'utf8');
+    const shards = path.join(folder, 'messages');
+    const target = kind === 'legacy' ? path.join(folder, 'messages.json')
+      : kind === 'directory' ? shards : path.join(shards, (await fs.readdir(shards))[0]!);
+    const method = kind === 'directory' ? 'readdir' : 'readFile';
+    const original = fs[method].bind(fs);
+    const spy = vi.spyOn(fs, method).mockImplementation((async (file: unknown, ...args: unknown[]) => {
+      if (String(file) === target) throw Object.assign(new Error('canonical history locked'), { code: 'EACCES' });
+      return Reflect.apply(original, fs, [file, ...args]);
+    }) as never);
+    try {
+      await expect(getSession(created.id)).rejects.toMatchObject({ code: 'EACCES' });
+      expect(await fs.readFile(path.join(folder, 'meta.json'), 'utf8')).toBe(primary);
+    } finally { spy.mockRestore(); }
+    expect((await getSession(created.id))?.userMessages).toBe(1);
+  });
+
+  it('retains corrupt-primary backup recovery but refuses an unreadable backup', async () => {
+    const created = await createSession({ conversationId: 'backup-recovery-owner' });
+    await renameSession(created.id, 'latest title');
+    await flushSessions();
+    resetSessionStoreForTests();
+    const folder = path.join(sessionsRoot(), created.id);
+    await fs.writeFile(path.join(folder, 'meta.json'), '{broken', 'utf8');
+    const backup = path.join(folder, 'meta.backup.json');
+    const original = fs.readFile.bind(fs);
+    const spy = vi.spyOn(fs, 'readFile').mockImplementation((async (file, ...args) => {
+      if (String(file) === backup) throw Object.assign(new Error('backup locked'), { code: 'EBUSY' });
+      return Reflect.apply(original, fs, [file, ...args]);
+    }) as typeof fs.readFile);
+    try {
+      await expect(getSession(created.id)).rejects.toMatchObject({ code: 'EBUSY' });
+    } finally { spy.mockRestore(); }
+    expect((await getSession(created.id))?.conversationId).toBe('backup-recovery-owner');
+  });
+
+  it('keeps absent sessions and stray catalog files distinct from I/O failures', async () => {
+    const stray = path.join(sessionsRoot(), 'stray-catalog-file');
+    await fs.writeFile(stray, 'not a session folder', 'utf8');
+    try {
+      resetSessionStoreForTests();
+      expect(await getSession('genuinely-absent')).toBeNull();
+      expect(await findSessionByConversation('genuinely-unrecorded')).toBeNull();
+    } finally { await fs.rm(stray); }
+  });
+
   it('numbers events in append order and reads them back unchanged', async () => {
     const summary = await createSession({ title: 'ordering', conversationId: null });
     const kinds: SessionEvent['kind'][] = ['user_message', 'turn_start', 'progress', 'turn_end'];
