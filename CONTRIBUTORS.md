@@ -155,6 +155,11 @@ invalidation on contradictory evidence. The existing bridge ingress proof is unc
 
 ## Reports, review and proposed work
 
+The two additional native transport-error wordings adapt
+[@Maximapple](https://github.com/Maximapple)'s
+[#450](https://github.com/totec448-spec/chat-on-steroids/pull/450).
+They extend the existing classifier, without changing recovery scheduling or send authority.
+
 The bounded React compiler-cache scan adapts [@Dolipr1ne](https://github.com/Dolipr1ne)'s
 [#417](https://github.com/totec448-spec/chat-on-steroids/pull/417): rows and cells share
 the existing budget, retaining rejection of incomplete or conflicting evidence.

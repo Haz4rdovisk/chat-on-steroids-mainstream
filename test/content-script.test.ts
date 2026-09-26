@@ -9556,7 +9556,12 @@ describe('how a turn is recorded as having ended', () => {
    * sitting on the error. The wording is what makes it recoverable; the page's own live
    * generation is what names the turn.
    */
-  it.each(['Message delivery timed out. Please try again.', 'ChatGPT stream recovery polling timed out'])('gives the transport banner %s the turn it broke without stopping native work', async banner => {
+  it.each([
+    'Message delivery timed out. Please try again.',
+    'ChatGPT stream recovery polling timed out',
+    'A network error occurred. Please check your connection and try again.',
+    'Resume stream unavailable'
+  ])('gives the transport banner %s the turn it broke without stopping native work', async banner => {
     live = await harness();
     startGenerating(live.document);
     assistantTurn(live.document, 'turn-1', []);
@@ -9587,7 +9592,11 @@ describe('how a turn is recorded as having ended', () => {
    * accessibility announcer exposed a different toast, so alert-only discovery missed the
    * failure entirely and the chat recovered only when the two-minute silence watch fired.
    */
-  it('records the complete non-alert help-center Retry card as a transport failure', async () => {
+  it.each([
+    'Something went wrong while generating the response. If this issue persists please contact us through our help center at help.openai.com.',
+    'A network error occurred. Please check your connection and try again.',
+    'Resume stream unavailable'
+  ])('records the complete non-alert Retry card %s as a transport failure', async banner => {
     live = await harness();
     startGenerating(live.document);
     assistantTurn(live.document, 'turn-retry-card', []);
@@ -9596,8 +9605,7 @@ describe('how a turn is recorded as having ended', () => {
 
     const card = live.document.createElement('div');
     const copy = live.document.createElement('p');
-    copy.textContent =
-      'Something went wrong while generating the response. If this issue persists please contact us through our help center at help.openai.com. ';
+    copy.textContent = banner + ' ';
     const retry = live.document.createElement('button');
     retry.textContent = 'Retry';
     card.append(copy, retry);
@@ -9608,14 +9616,18 @@ describe('how a turn is recorded as having ended', () => {
     const [failure] = emitted(live.sent, 'chat_error').map((entry) => entry.event);
     const [started] = emitted(live.sent, 'turn_start').map((entry) => entry.event);
     expect(failure).toMatchObject({
-      text:
-        'Something went wrong while generating the response. If this issue persists please contact us through our help center at help.openai.com. Retry',
+      text: banner + ' Retry',
       recoverable: true,
       turnId: started.turnId
     });
   });
 
-  it.each(['Connection interrupted. Waiting for the complete answer', 'ChatGPT stream recovery polling timed out. Retry'])('keeps a generating transport failure %s open through reload and records the recovered final under its original identity', async banner => {
+  it.each([
+    'Connection interrupted. Waiting for the complete answer',
+    'ChatGPT stream recovery polling timed out. Retry',
+    'A network error occurred. Please check your connection and try again. Retry',
+    'Resume stream unavailable Retry'
+  ])('keeps a generating transport failure %s open through reload and records the recovered final under its original identity', async banner => {
     live = await harness();
     startGenerating(live.document);
     assistantTurn(live.document, 'transport-live', []);
@@ -9779,7 +9791,12 @@ describe('how a turn is recorded as having ended', () => {
     expect(emitted(live.sent, 'chat_error')).toEqual([]);
   });
 
-  it.each(['Connection interrupted. Waiting for the complete answer', 'ChatGPT stream recovery polling timed out'])('does not turn ordinary assistant prose quoting %s into an error', async banner => {
+  it.each([
+    'Connection interrupted. Waiting for the complete answer',
+    'ChatGPT stream recovery polling timed out',
+    'A network error occurred. Please check your connection and try again.',
+    'Resume stream unavailable'
+  ])('does not turn ordinary assistant prose quoting %s into an error', async banner => {
     live = await harness();
     startGenerating(live.document);
     const section = assistantTurn(live.document, 'turn-explaining-an-error', []);
@@ -9796,7 +9813,11 @@ describe('how a turn is recorded as having ended', () => {
     expect(emitted(live.sent, 'chat_error')).toEqual([]);
   });
 
-  it('does not treat an arbitrary Retry control beside prose mentioning a failure as the failure card', async () => {
+  it.each([
+    'Something went wrong while generating the response.',
+    'A network error occurred. Please check your connection and try again.',
+    'Resume stream unavailable'
+  ])('does not treat an arbitrary Retry control beside prose mentioning %s as the failure card', async banner => {
     live = await harness();
     startGenerating(live.document);
     assistantTurn(live.document, 'turn-explaining-retry', []);
@@ -9805,7 +9826,7 @@ describe('how a turn is recorded as having ended', () => {
 
     const explanation = live.document.createElement('div');
     explanation.textContent =
-      'The earlier card said “Something went wrong while generating the response.” Use this only if you want to try that request again. ';
+      `The earlier card said “${banner}” Use this only if you want to try that request again. `;
     const retry = live.document.createElement('button');
     retry.textContent = 'Retry';
     explanation.append(retry);

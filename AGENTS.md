@@ -2262,8 +2262,9 @@ A claimed attempt is never reissued on missing acknowledgement. Progress stays a
 the original source turn. A recoverable transport banner does not end a natively generating
 turn; exact Thinking failed uses the activity-based two/five-minute silence rule. Exact native final evidence
 supersedes a stale transport banner and retains ordinary Goal/Loop eligibility.
-The exact native “ChatGPT stream recovery polling timed out” banner uses that same
-transport classification; quoted prose and access-limit notices retain their separate rules.
+The exact native “ChatGPT stream recovery polling timed out”, “Resume stream unavailable”
+and “A network error occurred. Please check your connection and try again.” banners use
+that same transport classification; quoted prose and access-limit notices retain their separate rules.
 
 Automatic response recovery follows the shared decision and conditional busy wait above.
 An automatically withdrawn rescue with no Send authorization or delivery receipt does not
@@ -2546,6 +2547,11 @@ sleeping worker with `agents action=message` before spawning a replacement. Mess
 delivery and report receipts are at-least-once transports with durable message identities;
 acknowledgement belongs to the exact recipient/run, not a UI read. Pending reports remain
 available when the last worker sleeps and the family parks.
+Reports are offered on the prime's tool results; accepting a worker finish records its
+report but does not confirm the prime received it or restart an idle prime. Model-facing
+acknowledgments must preserve that distinction. A final status check can collect existing
+reports, not wait for future ones; unfinished delegated review must be disclosed as pending,
+not presented as verified. This guidance grants no new automatic continuation authority.
 
 Attached and detached workers share `WORKER_SILENCE_MS` (three minutes). Only accepted new
 assistant output, native work or exactly attributed tool activity renews this clock. Page
