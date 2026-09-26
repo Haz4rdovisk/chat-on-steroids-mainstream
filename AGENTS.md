@@ -532,16 +532,20 @@ The native WebSocket `conversation-turn-stream` handoff uses the same complete-e
 requiring its outer conversation to match the inner event. It observes existing messages on
 ChatGPT secure sockets without sending, subscribing or polling; envelopes and frames are bounded.
 Native v1 delta headers may omit repeated channel/path/operation fields. The observer retains
-only those bounded format fields per HTTP response, or per linked conversation/turn socket
-stream. Missing predecessors, malformed/unknown encoding and retired streams discard that
-state. Identity still requires both ids in one complete root value; partial values, message
-text and cached answer branches never supply the join.
+bounded format fields per HTTP response, or per linked conversation/turn socket stream.
+Complete root values still provide independent identity proof. A native `input_message`
+may instead supply `input_message.metadata.request_id` after an explicit root conversation id
+in that same response or linked socket chain. No other request-only event inherits identity.
+Contradictory/malformed identity, unknown encoding or a missing socket predecessor permanently
+retires inherited identity for that stream; nested ids cannot seed it. Socket envelopes must
+agree with the inner identity. SSE comments do not invalidate it; done and new responses/turns
+cannot reuse it. Partial values, message text and cached answer branches never supply the join.
 A 64-pair document cache deduplicates both transports and replays IDs at content readiness.
 Content requires the matching route and document epoch, retaining one-shot stream proof through
 temporary ACK failures for at most 15 minutes using the existing observer/backoff. Missing stream
 metadata retains the Fiber path. Fetch reattachment at DOM readiness captures each downstream
 wrapper separately and deduplicates responses to avoid recursion through page instrumentation.
-The native `f/conversation/resume` stream uses the same complete-event reader. Observer version 2
+The native `f/conversation/resume` stream uses the same bounded reader. Observer version 3
 has an explicit refresh/disposal handle, also reached by existing MAIN-helper restoration.
 Replacing a versioned instance cancels its readers and retires listeners; a provider's wrapper
 can still delegate through an inactive instance. A legacy boolean has no disposal handle and

@@ -147,6 +147,12 @@ This adaptation rejects incomplete identity catalogs rather than deriving owners
 readable subset, preserves metadata-only rebinding authority, and reconciles uncertain appends
 through the existing session queue before allocating another sequence.
 
+The September 26 stream-evidence hardening adapts
+[@Maximapple](https://github.com/Maximapple)'s split-event diagnosis and metadata path from
+[#414](https://github.com/totec448-spec/chat-on-steroids/pull/414). Identity inheritance is limited
+to native input-message events in one HTTP response or linked socket chain, with permanent
+invalidation on contradictory evidence. The existing bridge ingress proof is unchanged.
+
 ## Reports, review and proposed work
 
 The September 22 selective review adapts [@lavalava45](https://github.com/lavalava45)'s
