@@ -52,4 +52,46 @@ append, canonical history failures, corrupt-primary backup recovery, and absent/
 - Both repositories: `git diff --check` passed; store, session tests, contributor credit and
   this worklog are byte-identical. The shared #392 files remain byte-identical too.
   AGENTS.md received the same scoped contract paragraph while preserving variant differences.
-- No build, installation, commit or push performed for this change.
+- At the source-validation checkpoint no build, installation, commit or push had been performed.
+
+## Authorized installed acceptance
+
+The subsequent user request authorized commits, an Internal build and remote acceptance on a
+second Windows host. Source commits: Mainstream `7c53dfa`, Internal `6ef2fe9`, with both
+upstream co-author trailers. No push was requested or performed.
+
+- Internal `npm run dist:x64` and `smoke-packaged-runtime.mjs --platform win32 --arch x64`
+  passed (Electron, Sharp/libvips, PTY, tree-sitter and packaged resources).
+- Installer SHA-256: `52E53DAEDB0420DFD3E41145D955FE1BF66EEEA46D41284D667760D17ED82666`.
+- Installed `app.asar` matched the built package:
+  `78F3DCECAD78C5BAFF03243A107C9BCED21A731A03700779B94CA5142CCFBE48`.
+- Both packaged and runtime-mirrored `extension/content.js` matched source:
+  `2D57787B8ECE542B7BBFE4E29DA3A40EFCD9E9C12A51641E5DE6073D76756215`.
+- A new isolated diagnostic conversation accepted a plain message and a synthetic red-square
+  PNG through the normal desktop composer. Responses were correct; each send retained one
+  confirmation check. Completion restored Send and the completed status rail.
+- Reloading only that native ChatGPT document preserved the same two user messages, answers
+  and checks, with unique event sequences and no visible context-frame leakage.
+- Graceful app shutdown completed recorder/durable flush; cold restart recovered the same
+  durable local session and exactly one current conversation owner. A follow-up completed
+  normally with its third delivery receipt and no duplicate messages.
+- One read-only PowerShell output command dispatched through MCP, completed successfully,
+  and recorded exact request-id attribution under that same diagnostic session.
+- Compact & Resume completed in approximately 48 seconds: source and destination native sends
+  had exact receipts, the job reached `done` with no error, and the same local session retained
+  old/new conversation lineage with exactly one current owner.
+- Enter in the desktop composer sent a post-compaction diagnostic once and received the expected
+  answer. All five authored diagnostic inputs retained their confirmation checks; the final
+  timeline had unique event sequences, no visible context frame, no active turn or pending Stop,
+  and the completed status rail. The two additional recorded user messages were the expected
+  handoff request and replacement-chat bootstrap, not duplicate authored inputs.
+- A second graceful shutdown and normal launch preserved the committed replacement conversation,
+  both lineage entries and the completed durable state. The app was left running without remote
+  debugging; port 9223 was closed. The test SSH forward and the two newly created scheduled tasks
+  were removed. Existing user chats and pre-existing diagnostic tasks were left intact.
+
+The log also contained renderer `ResizeObserver loop completed with undelivered notifications`
+errors around composer updates. The tested sends completed despite them; their cause was not
+investigated or attributed to this backend patch, and no UI changes were made.
+Disk locks/failures remain synthetic-fixture evidence, not faults injected into live user history.
+The live test does not establish every provider rollout, old-shell compatibility or power-loss safety.

@@ -53,3 +53,9 @@ For an extension replacement, the new recorder must capture the first send corre
 The patch cannot retroactively unregister anonymous listeners from an already loaded
 older content script. Reload the ChatGPT document or restart the app when testing.
 It does not claim to explain or cure previous prompt leaks or every delivery failure.
+
+Subsequent authorized installed acceptance is recorded in
+`worklog-2026-09-25-unreadable-session-history.md`: plain/image sends, native-page reload,
+graceful app restart, exact MCP recording, Compact & Resume and a desktop Enter send passed
+in a fresh diagnostic conversation on the second Windows host. Source/package/runtime extension
+hashes matched. This is acceptance of the observed account, not every provider UI rollout.
