@@ -46,8 +46,6 @@
 .ph.ph-arrow-square-out::before { content: '\e5de'; }
 .ph.ph-arrow-up::before { content: '\e08e'; }
 .ph.ph-arrows-clockwise::before { content: '\e094'; }
-.ph.ph-caret-down::before { content: '\e136'; }
-.ph.ph-caret-right::before { content: '\e13a'; }
 .ph.ph-chart-line::before { content: '\e154'; }
 .ph.ph-chat-circle::before { content: '\e168'; }
 .ph.ph-check::before { content: '\e182'; }
@@ -66,6 +64,7 @@
 .ph.ph-globe-hemisphere-west::before { content: '\e28c'; }
 .ph.ph-house::before { content: '\e2c2'; }
 .ph.ph-image::before { content: '\e2ca'; }
+.ph.ph-info::before { content: '\e2ce'; }
 .ph.ph-lightning::before { content: '\e2de'; }
 .ph.ph-list-checks::before { content: '\eadc'; }
 .ph.ph-lock-key::before { content: '\e2fe'; }
