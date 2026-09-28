@@ -216,7 +216,11 @@
               <header class="settings-section-head"><div><h2>Preview</h2><p>See changes as you adjust the workspace.</p></div></header>
               <div class="appearance-preview" aria-label="Appearance preview">
                 <div class="appearance-preview-sidebar"><svg class="ico brand-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-mark" /></svg><span></span><span class="is-selected"></span><span></span></div>
-                <div class="appearance-preview-chat"><p>How will your next idea look?</p><div class="appearance-preview-answer">A little color. Your kind of workspace.</div><div class="appearance-preview-composer"><span>Ask anything…</span><b aria-hidden="true"><i class="ph ph-arrow-up"></i></b></div></div>
+                <div class="appearance-preview-chat">
+                  <div class="appearance-preview-message"><span class="appearance-preview-avatar">You</span><p>Check the build and show what changed.</p></div>
+                  <div class="appearance-preview-message"><span class="appearance-preview-avatar is-agent">ChatGPT</span><div><p>Build passed. Here is the updated command:</p><pre><code>npm run build</code></pre><span class="appearance-preview-badge">✓ Complete</span></div></div>
+                  <div class="appearance-preview-composer"><span>Ask anything…</span><b aria-hidden="true">↑</b></div>
+                </div>
               </div>
             </section>
             <section class="appearance-section">
@@ -323,12 +327,24 @@
               <h1>Usage</h1>
               <p>Model availability and the work recorded in this workspace.</p>
             </header>
-            <div class="usage-status-line">
-              <i class="ico ph ph-info" aria-hidden="true"></i>
-              <p class="muted usage-status" id="usageStatus" role="status">Updating usage in the background. After an update, this can take a few minutes. You can keep using the app.</p>
-            </div>
             <div class="settings-surface usage-summary" id="usageSummary"></div>
             <div class="usage-sections">
+              <section class="settings-section usage-section usage-messages" aria-labelledby="usageMessagesTitle">
+                <header class="settings-section-head">
+                  <div><h2 id="usageMessagesTitle">Messages and limits</h2><p>Verified native sends alongside model, shared and feature limits reported by ChatGPT.</p></div>
+                  <button class="btn" id="refreshUsage" type="button"><i class="ico ph ph-arrow-clockwise" aria-hidden="true"></i>Refresh</button>
+                </header>
+                <div class="settings-surface usage-message-surface">
+                  <p class="muted usage-status" id="usageStatus" role="status">Updating usage in the background. After an update, this can take a few minutes. You can keep using the app.</p>
+                  <select class="usage-week-start" id="usageWeekStart" title="Change start day" aria-label="Change start day" aria-describedby="usageMessagePeriod"></select>
+                  <span class="sr-only" id="usageMessagePeriod"></span>
+                  <dl class="usage-message-counts" id="usageMessageCounts" aria-live="polite">
+                    <div class="usage-limit"><dt translate="no">GPT-5.6</dt><dd><strong id="usageMessages56" translate="no">—</strong><span class="muted">sent</span></dd></div>
+                    <div class="usage-limit"><dt translate="no">GPT-6</dt><dd><strong id="usageMessages6" translate="no">—</strong><span class="muted">sent</span></dd></div>
+                  </dl>
+                </div>
+                <div class="settings-surface" id="modelUsage"><div class="usage-limits" id="usageLimits"></div></div>
+              </section>
               <section class="settings-section usage-section">
                 <header class="settings-section-head">
                   <div><h2>Token activity per day</h2><p id="usageHeatmapCaption">Estimated context processed per tool call · last 52 weeks</p></div>
@@ -344,21 +360,6 @@
                 </details>
                 <p id="usageCost" class="muted usage-cost-summary">Set per-model cached-input rates to compare costs.</p>
                 <div id="usageDays" class="settings-surface usage-table-stack"></div>
-              </section>
-              <section class="settings-section usage-section usage-messages" aria-labelledby="usageMessagesTitle">
-                <header class="settings-section-head">
-                  <div><h2 id="usageMessagesTitle">Messages and limits</h2><p>Verified native sends alongside model, shared and feature limits reported by ChatGPT.</p></div>
-                  <button class="btn" id="refreshUsage" type="button"><i class="ico ph ph-arrow-clockwise" aria-hidden="true"></i>Refresh</button>
-                </header>
-                <div class="settings-surface usage-message-surface">
-                  <select class="usage-week-start" id="usageWeekStart" title="Change start day" aria-label="Change start day" aria-describedby="usageMessagePeriod"></select>
-                  <span class="sr-only" id="usageMessagePeriod"></span>
-                  <dl class="usage-message-counts" id="usageMessageCounts" aria-live="polite">
-                    <div class="usage-limit"><dt translate="no">GPT-5.6</dt><dd><strong id="usageMessages56" translate="no">—</strong><span class="muted">sent</span></dd></div>
-                    <div class="usage-limit"><dt translate="no">GPT-6</dt><dd><strong id="usageMessages6" translate="no">—</strong><span class="muted">sent</span></dd></div>
-                  </dl>
-                </div>
-                <div class="settings-surface" id="modelUsage"><div class="usage-limits" id="usageLimits"></div></div>
               </section>
             </div>
           </div>

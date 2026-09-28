@@ -17,8 +17,6 @@
 .appearance-page-head > .btn { flex: 0 0 auto; min-height: 34px; padding: 7px 9px; font-size: calc(11.5px * var(--text-scale, 1)); }
 .appearance-section + .appearance-section { margin-top: 28px; }
 .appearance-panel .appearance-settings-card { padding: 4px 18px; gap: 0; overflow: visible; }
-.appearance-preview-chat p { font-weight: 600; }
-.appearance-preview-answer { color: var(--soft); }
 @media (max-width: 1100px) {
   .appearance-panel { padding: 36px 24px 52px; }
   .appearance-panel .appearance-page-head { align-items: flex-start; flex-direction: column; gap: 18px; }
@@ -161,3 +159,14 @@ details.connector[open] > summary .connector-chevron { transform: rotate(90deg);
 /* Settings navigation settles in as the fork does when the sidebar switches to it. */
 @keyframes sidebar-content-in { from { opacity: .35; transform: translateX(-6px); clip-path: inset(0 0 0 8px); } to { opacity: 1; transform: translateX(0); clip-path: inset(0); } }
 .app[data-screen='settings'] #tabs { animation: sidebar-content-in 200ms cubic-bezier(.16, 1, .3, 1); }
+
+/* Usage keeps upstream's order — messages and limits first, then activity, then cost. Inside the
+   messages card the status and the week choice share one line, and the counts are figures
+   divided by a hairline rather than boxes inside the card. */
+.usage-panel .usage-message-surface { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px 16px; padding: 16px 18px; }
+.usage-panel .usage-message-surface > .usage-status { grid-column: 1; margin: 0; }
+.usage-panel .usage-message-surface > .usage-week-start { grid-column: 2; width: auto; min-width: 150px; }
+.usage-panel .usage-message-surface > .usage-message-counts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; margin: 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.usage-panel .usage-message-counts > .usage-limit { padding: 2px 18px 2px 0; border: 0; border-radius: 0; background: none; }
+.usage-panel .usage-message-counts > .usage-limit + .usage-limit { padding-left: 18px; border-left: 1px solid var(--line); }
+.usage-panel #modelUsage:has(> .usage-limits:empty) { display: none; }
