@@ -897,9 +897,16 @@
     const path = typeof event.data.path === 'string' && /^app:\/\/asdk_app_[A-Za-z0-9_-]{1,160}$/.test(event.data.path) ? event.data.path : null;
     coreMention = path && event.data.name === 'Chat On Steroids Core' ? { path, name: event.data.name } : null;
   });
+  /**
+   * The Core mention is for worker chats only (#861: a worker in Chat mode got the CoS task but no
+   * CoS tools without it). On the user's own prompts it reads to ChatGPT as "use this app": a plain
+   * question opened with an unrelated probe call (read /downloads, Write-Output 'ok') on every send.
+   * A worker is known by its agent identity, or by the bootstrap that is about to create it.
+   */
   function sendSubmittedText(stillCurrent, clearAcceptedDraft = true, beforeSend = null, acceptUserReceipt = null,
-                             matchesUser = matchesSubmittedUser, receiptTimeoutMs = null, explain = null) {
-    return CLF_DOM.send({ stillCurrent, clearAcceptedDraft, beforeSend, acceptUserReceipt, matchesUser, receiptTimeoutMs, mention: coreMention, explain,
+                             matchesUser = matchesSubmittedUser, receiptTimeoutMs = null, explain = null, worker = Boolean(agent)) {
+    return CLF_DOM.send({ stillCurrent, clearAcceptedDraft, beforeSend, acceptUserReceipt, matchesUser, receiptTimeoutMs,
+      mention: worker ? coreMention : null, explain,
       observeEvidence: check => { pageViewChecks.add(check); return () => pageViewChecks.delete(check); } });
   }
   const GOAL_MARKER_INSTRUCTION = '\n\nFor this Goal session only: at the end of each final reply, write exactly one separate last line: [[COS_GOAL:COMPLETE]] if the entire requested task is finished, or [[COS_GOAL:CONTINUE]] if requested work remains. Do not claim completion for partial work. If user input is required, explain it and omit both markers.';
@@ -11465,7 +11472,7 @@
       return true;
     };
     if (!(await sendSubmittedText(() => !attempt?.cancelled && sendingBootstrap(), false, authorizeBootstrapSend, null,
-                                  matchesSubmittedBootstrap))) {
+                                  matchesSubmittedBootstrap, null, null, boot.type === 'worker'))) {
       // Once send() was invoked, a missing/cleared draft cannot prove that no click
       // happened. Only the exact pre-click check above may release the dispatch.
       if (boot.type === 'resume') {

@@ -1579,7 +1579,7 @@ describe('desktop input delivery and helper ownership', () => {
     ['no report', null, null],
     ['an ambiguous report', { path: null, name: null }, null],
     ['a malformed path', { path: 'https://evil.example/', name: 'Chat On Steroids Core' }, null]
-  ])('mentions %s on a desktop-delivered prompt (#861)', async (_case, report, expected) => {
+  ])("never mentions %s on the user's own desktop-delivered prompt", async (_case, report, _expected) => {
     live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
       desktop_input: message => ({ ok: true, data: message.authorize || message.ack ? { ok: true } : { input: claimed() } })
     });
@@ -1595,7 +1595,34 @@ describe('desktop input delivery and helper ownership', () => {
     const mentions: unknown[] = [];
     adapter.send = (options: { mention?: unknown }) => { mentions.push(options.mention ?? null); return send({ ...options, mention: null }); };
     expect(await live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null })).toEqual({ ok: true });
-    expect(mentions).toEqual([expected]);
+    // The mention reads to ChatGPT as "use this app": on the user's own question it opened every
+    // first turn with an unrelated probe call. Only a worker needs it (#861).
+    expect(mentions).toEqual([null]);
+  });
+
+  it('mentions the reported Core app on a worker bootstrap (#861)', async () => {
+    let release!: (value: unknown) => void;
+    const redeemed = new Promise(resolve => { release = resolve; });
+    const workerChat = '24242424-3535-4646-8989-010101010101';
+    live = await harness('https://chatgpt.com/?clf=cmd-mention', {
+      redeem: () => redeemed,
+      ack: () => ({ ok: true })
+    }, (document, dom) => {
+      document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+        dom.reconfigure({ url: `https://chatgpt.com/c/${workerChat}` });
+        userTurn(document, 'mention-worker-user', 'Worker task', { sent: false });
+      });
+    });
+    const core = { path: 'app://asdk_app_6aa5b6651c3c81919f03cb5dc38bf019', name: 'Chat On Steroids Core' };
+    live.window.dispatchEvent(new live.window.MessageEvent('message', {
+      source: live.window as unknown as Window, origin: 'https://chatgpt.com', data: { type: 'cos-core-mention', ...core } }));
+    const adapter = (live.window as any).CLF_DOM;
+    const send = adapter.send;
+    const mentions: unknown[] = [];
+    adapter.send = (options: { mention?: unknown }) => { mentions.push(options.mention ?? null); return send({ ...options, mention: null }); };
+    release({ ok: true, command: { id: 'cmd-mention', type: 'worker', text: 'Worker task', agent: 'worker-1' } });
+    await settle(400); await live.hook.flush();
+    expect(mentions).toEqual([core]);
   });
 
   it.each([false, true])('retains an unmounted native receipt only in its sending lifetime (navigate: %s)', async navigate => {
