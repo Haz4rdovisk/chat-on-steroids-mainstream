@@ -896,7 +896,14 @@
     if (!alive || event.source !== window || event.origin !== location.origin || event.data?.type !== 'cos-core-mention') return;
     const path = typeof event.data.path === 'string' && /^app:\/\/asdk_app_[A-Za-z0-9_-]{1,160}$/.test(event.data.path) ? event.data.path : null;
     coreMention = path && event.data.name === 'Chat On Steroids Core' ? { path, name: event.data.name } : null;
+    // The same list is the app's proof that the plugin exists in this account, so Setup can call
+    // it done without a test message. Told once per app id: the list comes again on every load.
+    if (coreMention && coreMention.path !== reportedCorePlugin) {
+      reportedCorePlugin = coreMention.path;
+      void ask({ type: 'core_plugin', appId: coreMention.path.slice('app://'.length) }).catch(() => { reportedCorePlugin = null; });
+    }
   });
+  let reportedCorePlugin = null;
   /**
    * Whether the user's own prompts carry the Core mention (the app's ui.mentionCore, on unless off).
    *
