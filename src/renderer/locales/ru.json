@@ -1766,5 +1766,10 @@
   "Session Finish only": "Только при завершении сеанса",
   "Also after the turn": "Также после хода",
   "Search models": "Поиск моделей",
-  "Chat On Steroids browser (built-in)": "Браузер Chat On Steroids (встроенный)"
+  "Chat On Steroids browser (built-in)": "Браузер Chat On Steroids (встроенный)",
+  "ChatGPT can run hidden in the built-in Chat On Steroids browser, out of your taskbar.": "ChatGPT может работать скрыто во встроенном браузере Chat On Steroids, не занимая место на панели задач.",
+  "Choose in Settings": "Выбрать в настройках",
+  "Dismiss": "Скрыть",
+  "You are signed out of ChatGPT in the built-in browser, so messages cannot be sent.": "Вы вышли из ChatGPT во встроенном браузере, поэтому сообщения нельзя отправить.",
+  "Sign in to ChatGPT": "Войти в ChatGPT"
 }

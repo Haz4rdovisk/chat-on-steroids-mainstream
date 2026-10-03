@@ -1936,6 +1936,10 @@ as soon as it loads), stops it when another browser is chosen, and the app stops
   hides `navigator.userAgentData` (frame preload): Google refuses an embedded Chromium otherwise.
   The agent changes only after a document commits, then that page loads once more; changing it
   while a navigation is in flight aborts the navigation and takes the app down.
+- **Notices.** `src/renderer/cos-browser-notice.ts`. A signed-out built-in browser
+  (`cosBrowserSignedIn === false`) shows a chat notice with Sign in, which cannot be dismissed: it is
+  a state, not a tip. A connected desktop browser shows a dismissible tip pointing at the Settings
+  choice. Unknown (null) shows neither.
 
 Several browsers can run the extension against one app. Each sends a random
 `x-extension-browser` id; its `/status` pass reports the chats it has open, and a browser that

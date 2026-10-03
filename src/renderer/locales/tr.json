@@ -1766,5 +1766,10 @@
   "Session Finish only": "Yalnızca oturum bitişinde",
   "Also after the turn": "Turdan sonra da",
   "Search models": "Model ara",
-  "Chat On Steroids browser (built-in)": "Chat On Steroids tarayıcısı (yerleşik)"
+  "Chat On Steroids browser (built-in)": "Chat On Steroids tarayıcısı (yerleşik)",
+  "ChatGPT can run hidden in the built-in Chat On Steroids browser, out of your taskbar.": "ChatGPT, yerleşik Chat On Steroids tarayıcısında görev çubuğunda görünmeden gizli çalışabilir.",
+  "Choose in Settings": "Ayarlarda seç",
+  "Dismiss": "Kapat",
+  "You are signed out of ChatGPT in the built-in browser, so messages cannot be sent.": "Yerleşik tarayıcıda ChatGPT oturumunuz kapalı, bu yüzden mesaj gönderilemiyor.",
+  "Sign in to ChatGPT": "ChatGPT'de oturum açın"
 }

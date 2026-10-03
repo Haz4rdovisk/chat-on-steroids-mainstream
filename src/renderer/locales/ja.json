@@ -1766,5 +1766,10 @@
   "Session Finish only": "セッション終了通知時のみ",
   "Also after the turn": "ターン後にも送信",
   "Search models": "モデルを検索",
-  "Chat On Steroids browser (built-in)": "Chat On Steroids ブラウザー（内蔵）"
+  "Chat On Steroids browser (built-in)": "Chat On Steroids ブラウザー（内蔵）",
+  "ChatGPT can run hidden in the built-in Chat On Steroids browser, out of your taskbar.": "ChatGPT は内蔵の Chat On Steroids ブラウザーで非表示のまま実行でき、タスクバーに表示されません。",
+  "Choose in Settings": "設定で選択",
+  "Dismiss": "閉じる",
+  "You are signed out of ChatGPT in the built-in browser, so messages cannot be sent.": "内蔵ブラウザーで ChatGPT からサインアウトしているため、メッセージを送信できません。",
+  "Sign in to ChatGPT": "ChatGPT にサインイン"
 }

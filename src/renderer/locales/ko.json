@@ -1766,5 +1766,10 @@
   "Session Finish only": "세션 종료 시에만",
   "Also after the turn": "턴 이후에도",
   "Search models": "모델 검색",
-  "Chat On Steroids browser (built-in)": "Chat On Steroids 브라우저(내장)"
+  "Chat On Steroids browser (built-in)": "Chat On Steroids 브라우저(내장)",
+  "ChatGPT can run hidden in the built-in Chat On Steroids browser, out of your taskbar.": "ChatGPT를 내장 Chat On Steroids 브라우저에서 숨긴 채 실행해 작업 표시줄에 나타나지 않게 할 수 있습니다.",
+  "Choose in Settings": "설정에서 선택",
+  "Dismiss": "닫기",
+  "You are signed out of ChatGPT in the built-in browser, so messages cannot be sent.": "내장 브라우저에서 ChatGPT에 로그아웃되어 있어 메시지를 보낼 수 없습니다.",
+  "Sign in to ChatGPT": "ChatGPT에 로그인"
 }

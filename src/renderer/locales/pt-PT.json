@@ -1766,5 +1766,10 @@
   "Session Finish only": "Apenas no fim da sessão",
   "Also after the turn": "Também após o turno",
   "Search models": "Pesquisar modelos",
-  "Chat On Steroids browser (built-in)": "Navegador do Chat On Steroids (integrado)"
+  "Chat On Steroids browser (built-in)": "Navegador do Chat On Steroids (integrado)",
+  "ChatGPT can run hidden in the built-in Chat On Steroids browser, out of your taskbar.": "O ChatGPT pode correr oculto no navegador integrado do Chat On Steroids, fora da barra de tarefas.",
+  "Choose in Settings": "Escolher nas Definições",
+  "Dismiss": "Dispensar",
+  "You are signed out of ChatGPT in the built-in browser, so messages cannot be sent.": "Terminou a sessão do ChatGPT no navegador integrado, por isso as mensagens não podem ser enviadas.",
+  "Sign in to ChatGPT": "Iniciar sessão no ChatGPT"
 }

@@ -166,6 +166,17 @@
         <span>Chat On Steroids connector tools changed. Refresh the affected connector in ChatGPT; this is separate from the browser extension.</span>
         <button class="btn btn-icon" id="dismissPluginRefreshReminder" type="button" title="Dismiss reminder" aria-label="Dismiss reminder"><i class="ico ph ph-x" aria-hidden="true"></i></button>
       </div>
+      <div class="notice is-warn" id="cosSignInNotice" role="alert" hidden>
+        <i class="ico ph ph-lock-key" aria-hidden="true"></i>
+        <span>You are signed out of ChatGPT in the built-in browser, so messages cannot be sent.</span>
+        <button class="btn btn-quiet" id="cosSignInNoticeOpen" type="button">Sign in to ChatGPT</button>
+      </div>
+      <div class="notice" id="cosBrowserNotice" role="status" hidden>
+        <i class="ico ph ph-eye-slash" aria-hidden="true"></i>
+        <span>ChatGPT can run hidden in the built-in Chat On Steroids browser, out of your taskbar.</span>
+        <button class="btn btn-quiet" id="cosBrowserNoticeChoose" type="button">Choose in Settings</button>
+        <button class="btn btn-icon" id="dismissCosBrowserNotice" type="button" title="Dismiss" aria-label="Dismiss"><i class="ico ph ph-x" aria-hidden="true"></i></button>
+      </div>
       </div>
 
       <main>

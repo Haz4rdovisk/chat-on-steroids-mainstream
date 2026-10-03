@@ -1766,5 +1766,10 @@
   "Session Finish only": "仅在轮次结束通知时",
   "Also after the turn": "也可在轮后发送",
   "Search models": "搜索模型",
-  "Chat On Steroids browser (built-in)": "Chat On Steroids 浏览器（内置）"
+  "Chat On Steroids browser (built-in)": "Chat On Steroids 浏览器（内置）",
+  "ChatGPT can run hidden in the built-in Chat On Steroids browser, out of your taskbar.": "ChatGPT 可以在内置的 Chat On Steroids 浏览器中隐藏运行，不占用任务栏。",
+  "Choose in Settings": "在设置中选择",
+  "Dismiss": "关闭",
+  "You are signed out of ChatGPT in the built-in browser, so messages cannot be sent.": "你已在内置浏览器中退出 ChatGPT，因此无法发送消息。",
+  "Sign in to ChatGPT": "登录 ChatGPT"
 }

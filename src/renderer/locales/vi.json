@@ -1766,5 +1766,10 @@
   "Session Finish only": "Chỉ khi kết thúc phiên",
   "Also after the turn": "Đồng thời sau lượt",
   "Search models": "Tìm mô hình",
-  "Chat On Steroids browser (built-in)": "Trình duyệt Chat On Steroids (tích hợp)"
+  "Chat On Steroids browser (built-in)": "Trình duyệt Chat On Steroids (tích hợp)",
+  "ChatGPT can run hidden in the built-in Chat On Steroids browser, out of your taskbar.": "ChatGPT có thể chạy ẩn trong trình duyệt tích hợp của Chat On Steroids, không hiện trên thanh tác vụ.",
+  "Choose in Settings": "Chọn trong Cài đặt",
+  "Dismiss": "Bỏ qua",
+  "You are signed out of ChatGPT in the built-in browser, so messages cannot be sent.": "Bạn đã đăng xuất khỏi ChatGPT trong trình duyệt tích hợp, nên không thể gửi tin nhắn.",
+  "Sign in to ChatGPT": "Đăng nhập ChatGPT"
 }
